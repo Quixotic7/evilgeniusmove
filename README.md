@@ -35,9 +35,9 @@ make package     # dist/evilgenius-module.tar.gz
 |---|---|
 | 16 step buttons | the steps: tap, hold to edit, as the FM-1's W1-W16 |
 | Shift + step 1 / 2 / 5 / 6 / 11 / 14 | projects / setup (settings, exit) / tempo / metronome / MIDI FX / double the track |
-| Top pad row | page keys: the hold modes at home, the 8 sound groups in SOUND, the floors in FX (pad 8 steps through the keys past the eighth) |
+| Top pad row | at home the six tracks; in SOUND the 8 sound groups; in FX the floors (pad 8 steps through the last two) |
 | Lower three pad rows | notes in the track's scale; a row up is a fourth up (Shift + - / +: octave) |
-| Knobs 1-8 | the open page's values; touch or turn for the name and value full screen |
+| Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value |
 | Wheel | next / previous page (SOUND, FX), track (MIX), the core's SELECT elsewhere; Shift: the track's sound |
 | Wheel touched | all eight values at once |
 | Wheel click | choose in the setup menu; yes / enter in the core's own menus |

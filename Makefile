@@ -72,8 +72,9 @@ $(B)/sam-%.o: %.c | $(B)
 	$(CC) $(OPT) -std=gnu99 -w $(INC) $(DEFS) -c $< -o $@
 $(B)/pvg-%.o: %.c | $(B)
 	$(CC) $(OPT) -std=gnu11 -w $(INC) $(DEFS) -c $< -o $@
-$(B)/%.o: src/%.c $(wildcard src/*.h) | $(B)
-	$(CC) $(OPT) -std=gnu11 -Wall -Wextra $(INC) -c $< -o $@
+# (the same DEFS as the core: its structs' layouts depend on them)
+$(B)/%.o: src/%.c $(wildcard src/*.h) Makefile | $(B)
+	$(CC) $(OPT) -std=gnu11 -Wall -Wextra $(INC) $(DEFS) -c $< -o $@
 
 clean:
 	rm -rf build dist

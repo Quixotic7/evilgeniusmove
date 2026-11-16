@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "chord.h"
 #include "ctl.h"
 #include "persist.h"
 #include "qd_gfx.h"
@@ -112,6 +113,13 @@ static int8_t g_snd_core[NSND][8];     /* each value's page in the core (QD_SND_
 typedef struct { int8_t a, b; } fpage_t;
 static const fpage_t FXP[] = { {0, 1}, {2, -1}, {3, 4}, {5, 6}, {7, -1}, {8, -1}, {9, -1}, {10, -1}, {11, -1} };
 #define NFX ((int)(sizeof FXP / sizeof FXP[0]))
+
+/* HOME: a step's values on the eight knobs (a step held: that step's; none held: the track's defaults). These are the
+ * FM-1's hold modes, which there are picked with the black keys and turned on one knob; here each has its own. NOTE
+ * needs none (the pads play the notes in) and SOUND is Shift + the wheel. Shift + a knob: the mode's second value
+ * (LEN's tie, MICRO's strum, RATCH's ramp, CHANCE's condition, COND's chance); Shift + the last: the step function */
+static const uint8_t HOME_MODE[8] = { UI_F_VEL, UI_F_LEN, UI_F_MICRO, UI_F_RATCH, UI_F_CHNC, UI_F_COND, UI_F_TRIG, UI_F_SLIDE };
+static const char *const HOME_NAME[8] = { "VELOCITY", "LENGTH", "MICRO", "RATCHET", "CHANCE", "CONDITION", "TRIG", "SLIDE" };
 
 /* ------------------------------------------------------------------ rings: one writer, one reader each --- */
 #define RING 512u
@@ -267,6 +275,31 @@ static void knob_info(int i, kinfo_t *o)
             o->frac = (pan + 64) * 1000 / 127;
         }
         o->ok = 1;
+    } else if (S.mode == MV_HOME) {
+        static const char *const TRIG[4] = { "OFF", "NOTE", "LOCK", "TIE" };
+        const qd_pattern_t *P = qd_ctl_cpat(&A);
+        qd_rstep_t r;
+        if (A.ui.nheld)
+            qd_step_resolve(P, A.sel, A.ui.held[0], &r);
+        else {                                          /* the track's defaults: a step with no overrides */
+            qd_step_t on;
+            memset(&on, 0, sizeof on);
+            on.flags = QD_SF_ON;
+            qd_step_resolve_def(&P->trk[A.sel].def, &on, &r);
+        }
+        snprintf(o->name, sizeof o->name, "%s", S.shift && i == 7 ? "FUNCTION" : HOME_NAME[i]);
+        switch (S.shift && i == 7 ? UI_F_FUNC : HOME_MODE[i]) {
+        case UI_F_VEL: snprintf(o->val, sizeof o->val, "%d", r.vel); o->frac = r.vel * 1000 / 127; break;
+        case UI_F_LEN: snprintf(o->val, sizeof o->val, "%s", qd_len_name(r.len)); break;
+        case UI_F_MICRO: snprintf(o->val, sizeof o->val, "%+d", r.micro); break;
+        case UI_F_RATCH: snprintf(o->val, sizeof o->val, "X%d", r.ratch < 1 ? 1 : r.ratch); o->frac = (r.ratch < 1 ? 0 : r.ratch - 1) * 1000 / 7; break;
+        case UI_F_CHNC: snprintf(o->val, sizeof o->val, "%d%%", r.chance); o->frac = r.chance * 10; break;
+        case UI_F_COND: qd_cond_name(r.cond, o->val); break;
+        case UI_F_TRIG: snprintf(o->val, sizeof o->val, "%s", TRIG[r.type & 3]); break;
+        case UI_F_FUNC: qd_fn_name(r.func, o->val); break;
+        default: break;                                 /* (SLIDE: its name; the value is the core's to show) */
+        }
+        o->ok = 1;
     } else {                                            /* the core's own page: its knobs' jobs by name, no value */
         static const int LBL[8] = { QD_LBL_KNOB0 + QD_K_1, QD_LBL_KNOB0 + QD_K_2, QD_LBL_KNOB0 + QD_K_3,
                                     QD_LBL_KNOB0 + QD_K_4, QD_LBL_KNOB0 + QD_K_ALGO, QD_LBL_KNOB0 + QD_K_PRESETS, -1, -1 };
@@ -382,6 +415,13 @@ static void knob(int i, int delta)
             A.sel = keep;
         } else if (i == 6)
             qd_app_knob(&A, QD_K_2, d);                 /* the selected track's pan */
+    } else if (S.mode == MV_HOME) {                     /* the core's hold mode put on this knob's for the turn */
+        const int keep = A.ui.hmode, second = S.shift && i >= 1 && i <= 5;
+        A.ui.hmode = S.shift && i == 7 ? UI_F_FUNC : HOME_MODE[i];
+        unshift(1);
+        qd_app_knob(&A, second ? QD_K_2 : QD_K_1, d);
+        unshift(0);
+        A.ui.hmode = keep;
     } else {
         static const int K[8] = { QD_K_1, QD_K_2, QD_K_3, QD_K_4, QD_K_ALGO, QD_K_PRESETS, -1, -1 };
         if (K[i] >= 0)
@@ -484,27 +524,21 @@ static void note_pad(int idx, int vel)
     }
 }
 
-/* the top pad row: the page keys. Eight pads, so where the core has more keys than that the last pad holds the rest
- * and steps through them: at home B8, B9, B10 (TRIG, FUNC, SOUND), in FX the last two floors */
+/* the top pad row: the page keys. In SOUND the eight groups; in FX the floors (the last pad steps through the two
+ * floors past the eighth); at home the six tracks; on the core's own pages its black keys B1..B8 */
 static void page_pad(int col, int down, int vel)
 {
-    static int8_t key_down[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
     if (S.mode == MV_SOUND) {
         if (down)
             snd_group(col);
     } else if (S.mode == MV_FX) {
         if (down)
             fx_go(col == 7 && S.fpage == 7 ? 8 : col);
-    } else if (down) {
-        int b = col;
-        if (col == 7 && S.mode == MV_HOME)
-            b = A.ui.hmode == 7 ? 8 : A.ui.hmode == 8 ? 9 : 7;
-        key_down[col] = (int8_t)b;
-        qd_app_key(&A, QD_BLACK_KEY[b], 1, vel);
-    } else if (key_down[col] >= 0) {
-        qd_app_key(&A, QD_BLACK_KEY[key_down[col]], 0, 0);
-        key_down[col] = -1;
-    }
+    } else if (S.mode == MV_HOME) {
+        if (down && col < QD_TRACKS)
+            qd_ctl_select_track(&A, col);
+    } else
+        qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
 }
 
 static void surface_note(int note, int vel)
@@ -699,6 +733,7 @@ static const char *screen_name(int scr)                 /* the core's own pages'
 static void sync(void)
 {
     const int m = mode_now(), scr = qd_view_screen(&A);
+    A.ui.ekeys = 0;                                     /* the step buttons are always the steps here: the pads are the keys */
     if (m != S.mode) {
         S.mode = m;
         S.win_top = 0;
@@ -767,14 +802,10 @@ static void leds(void)
             c = (uint8_t)(SND[S.spage].group == i ? C_WHITE : C_BLUE);
         else if (S.mode == MV_FX)
             c = (uint8_t)(S.fpage == i || (i == 7 && S.fpage == 8) ? C_WHITE : C_BLUE);
-        else {
-            int lv = L.key[QD_BLACK_KEY[i]];
-            if (i == 7 && S.mode == MV_HOME) {          /* (the pad of three keys: the brightest of them) */
-                if (L.key[QD_BLACK_KEY[8]] > lv) lv = L.key[QD_BLACK_KEY[8]];
-                if (L.key[QD_BLACK_KEY[9]] > lv) lv = L.key[QD_BLACK_KEY[9]];
-            }
-            c = shade(lv, C_DKBLUE, C_BLUE, C_LTBLUE);
-        }
+        else if (S.mode == MV_HOME)                     /* the tracks: the selected one, a flash as each plays */
+            c = (uint8_t)(i >= QD_TRACKS ? C_OFF : A.sel == i ? C_WHITE : qd_ctl_trig_flash(&A, i) ? C_LTBLUE : C_BLUE);
+        else
+            c = shade(L.key[QD_BLACK_KEY[i]], C_DKBLUE, C_BLUE, C_LTBLUE);
         led_note(N_PAD0 + 24 + i, c);
     }
     led_cc(CC_SHIFT, white(L.button[B_GLO]));
@@ -936,6 +967,21 @@ static void page_draw(mono_t *m, uint32_t now_ms)
             level[i] = v.tr[i].level, mute[i] = v.tr[i].mute, meter[i] = (int)(v.tr[i].meter * 1000.f);
         scr_mix(m, level, mute, meter, 6, A.sel);
     } else {
+        if (S.mode == MV_HOME && A.ui.nheld) {          /* a step held: which, and the notes in it */
+            const qd_pattern_t *P = qd_ctl_cpat(&A);
+            char nm[16], notes[16] = "";
+            qd_rstep_t r;
+            int k;
+            qd_step_resolve(P, A.sel, A.ui.held[0], &r);
+            snprintf(nm, sizeof nm, A.ui.nheld > 1 ? "STEP %d +%d" : "STEP %d", A.ui.held[0] % QD_PAGE + 1, A.ui.nheld - 1);
+            for (k = 0; k < r.nn && k < 3; k++) {
+                char one[6];
+                qd_note_name(r.notes[k], one);
+                snprintf(notes + strlen(notes), sizeof notes - strlen(notes), k ? " %s" : "%s", one);
+            }
+            scr_knob(m, nm, r.type == QD_TRIG_NONE ? "EMPTY" : notes, -1);
+            return;
+        }
         core_frame(now_ms);
         if (S.mode == MV_HOME && S.scr == QD_SCR_EDIT)
             scr_core_crop(m, g_lcd, 0, 24);             /* the room, between its head and its foot */
