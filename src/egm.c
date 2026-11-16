@@ -36,6 +36,8 @@
 #include "mono.h"
 #include "screens.h"
 
+void qd_view_edit(qd_app_t *a, ui_held_t *h, ui_lane_t *l);    /* view.c: the EDIT view's records (the room's lane) */
+
 /* ------------------------------------------------------------------ the Move's surface (schwung docs/API.md) --- */
 enum { N_KNOB_TOUCH0 = 0, N_VOL_TOUCH = 8, N_JOG_TOUCH = 9, N_STEP0 = 16, N_PAD0 = 68 };
 enum { CC_JOG_CLICK = 3, CC_JOG = 14, CC_TRACK4 = 40, CC_TRACK1 = 43, CC_SHIFT = 49, CC_MENU = 50, CC_BACK = 51,
@@ -49,7 +51,7 @@ enum { C_OFF = 0, C_GREY = 119, C_LGREY = 118, C_WHITE = 120, C_DKBLUE = 97, C_B
 enum { B_FX, B_SEL, B_ENV, B_LFO, B_EDIT, B_GLO, B_HOME, B_SAVE, B_ARP, B_SEQ, B_PLAY, B_REC, B_OCTDN, B_OCTUP };
 
 enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_CORE };
-enum { OV_NONE, OV_SETUP, OV_TEMPO };  /* a page of the Move's own over whatever is up */
+enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER };  /* a page of the Move's own over whatever is up */
 
 /* Shift + a step button: the Move's own shortcuts, by the icons printed under the steps (0: none there) */
 enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_DOUBLE };
@@ -67,6 +69,7 @@ static const uint8_t SHIFT_STEP[16] = {
 };
 static const char *const SETUP_ITEMS[] = { "SETTINGS", "EXIT", "CLOSE" };
 enum { SETUP_SETTINGS, SETUP_EXIT, SETUP_CLOSE, SETUP_N };
+static const char *const POWER_ITEMS[] = { "CANCEL", "POWEROFF" };
 
 #define KNOB_DIV 4                     /* Move encoder counts to one core detent (the FM-1's knobs click; these do not) */
 #define STEP_VEL 100                   /* a step button's velocity (it has no sensor) */
@@ -155,7 +158,11 @@ static struct {
     int spage, fpage;                  /* the SOUND page, the FX floor shown */
     int menu_sel;
     uint32_t home_up_ms;               /* the core's HOME held for it (its settings): let go then (0: not) */
-    int shift, vol_touch, quit;
+    int shift, vol_touch, quit;        /* quit: 1 back to Move, 2 the power off */
+    int mute_down, mute_used;          /* Mute held, and used on a track (its release is then no tap) */
+    int loop_down;                     /* Loop held: the steps are the patterns */
+    int pw_stage;                      /* the power button's SysEx: how far into it .. */
+    uint8_t pw_cmd[3], pw_status;      /* .. its report, the last one's bits */
     int knob_acc[10];                  /* knobs 1..8, the wheel, the volume */
     int pot;                           /* MASTER, 0..1023 */
     int touch;                         /* the control touched: 0..7 a knob, 8 the volume, 9 the wheel; -1 none */
@@ -297,7 +304,16 @@ static void knob_info(int i, kinfo_t *o)
         case UI_F_COND: qd_cond_name(r.cond, o->val); break;
         case UI_F_TRIG: snprintf(o->val, sizeof o->val, "%s", TRIG[r.type & 3]); break;
         case UI_F_FUNC: qd_fn_name(r.func, o->val); break;
-        default: break;                                 /* (SLIDE: its name; the value is the core's to show) */
+        case UI_F_SLIDE: {                              /* the step's own lock of the sound's glide, else the sound's */
+            static const char *const PORT[3] = { "OFF", "ON", "LEGATO" };
+            int16_t pv = 0;
+            if (A.ui.nheld && qd_lock_get(P, A.sel, A.ui.held[0], QD_QP_PORT, &pv))
+                snprintf(o->val, sizeof o->val, "%s", PORT[pv < 0 ? 0 : pv > 2 ? 2 : pv]);
+            else
+                snprintf(o->val, sizeof o->val, "SOUND");
+            break;
+        }
+        default: break;
         }
         o->ok = 1;
     } else {                                            /* the core's own page: its knobs' jobs by name, no value */
@@ -436,6 +452,8 @@ static void wheel(int delta)
         return;
     if (S.over == OV_SETUP) {
         S.menu_sel = S.menu_sel + d < 0 ? 0 : S.menu_sel + d >= SETUP_N ? SETUP_N - 1 : S.menu_sel + d;
+    } else if (S.over == OV_POWER) {
+        S.menu_sel = d > 0;
     } else if (S.over == OV_TEMPO) {
         const int bpm = qd_seq_bpm(&A.seq) + d;
         qd_ctl_set_tempo(&A, bpm < 30 ? 30 : bpm > 300 ? 300 : bpm);
@@ -475,6 +493,14 @@ static void wheel_click(int down)
     if (S.over == OV_TEMPO) {
         if (down)
             S.over = OV_NONE;
+        return;
+    }
+    if (S.over == OV_POWER) {
+        if (!down)
+            return;
+        S.over = OV_NONE;
+        if (S.menu_sel == 1)
+            S.quit = 2;
         return;
     }
     if (S.mode == MV_CORE)                              /* the core's own menus: yes / enter (its OCT+) */
@@ -524,19 +550,45 @@ static void note_pad(int idx, int vel)
     }
 }
 
+/* a track's pad or button: select it; with Mute held: mute it (Shift too: solo) */
+static void track_press(int t)
+{
+    if (t < 0 || t >= QD_TRACKS)
+        return;
+    if (S.mute_down) {
+        S.mute_used = 1;
+        if (S.shift)
+            A.seq.solo ^= (uint8_t)(1u << t);
+        else
+            A.seq.mute ^= (uint8_t)(1u << t);
+    } else
+        qd_ctl_select_track(&A, t);
+}
+
 /* the top pad row: the page keys. In SOUND the eight groups; in FX the floors (the last pad steps through the two
  * floors past the eighth); at home the six tracks; on the core's own pages its black keys B1..B8 */
 static void page_pad(int col, int down, int vel)
 {
-    if (S.mode == MV_SOUND) {
-        if (down)
+    if (S.loop_down || S.mute_down) {                   /* Loop held: the core's bank keys; Mute held: the tracks */
+        if (S.mute_down) {
+            if (down)
+                track_press(col);
+        } else
+            qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
+    } else if (S.mode == MV_SOUND) {
+        if (down && S.shift) {                          /* Shift: the dice, this group's page shaken */
+            unshift(1);
+            qd_snd_randomise(&A, g_snd_core[S.spage][0]);
+            unshift(0);
+            show_name("SHAKEN");
+        } else if (down)
             snd_group(col);
     } else if (S.mode == MV_FX) {
         if (down)
             fx_go(col == 7 && S.fpage == 7 ? 8 : col);
     } else if (S.mode == MV_HOME) {
-        if (down && col < QD_TRACKS)
-            qd_ctl_select_track(&A, col);
+        if (down)
+            track_press(col);
     } else
         qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
 }
@@ -626,8 +678,17 @@ static void surface_cc(int cc, int v)
         } else
             btn(B_EDIT, down);
         break;
-    case CC_MUTE: btn(B_ENV, down); break;              /* the mix; again: its sends, the FX mix */
-    case CC_LOOP: btn(B_SEQ, down); break;
+    case CC_MUTE:                                       /* held with a track: mute it. Tapped: the mix (again: its
+                                                         * sends, the FX mix) */
+        if (down)
+            S.mute_down = 1, S.mute_used = 0;
+        else {
+            S.mute_down = 0;
+            if (!S.mute_used)
+                tap(B_ENV);
+        }
+        break;
+    case CC_LOOP: S.loop_down = down; btn(B_SEQ, down); break;   /* held: the steps choose the pattern */
     case CC_COPY:                                       /* the pattern copied; Shift: pasted (SHIFT + B4 / B5) */
         if (down) {
             if (!S.shift) btn(B_GLO, 1);
@@ -676,15 +737,51 @@ static void surface_cc(int cc, int v)
     default:
         if (cc >= CC_TRACK4 && cc <= CC_TRACK1 && down) {   /* Shift: tracks 5 and 6 on the first two */
             const int n = CC_TRACK1 - cc;
-            qd_ctl_select_track(&A, S.shift && n < 2 ? n + 4 : n);
+            if (S.mute_down)
+                track_press(n);
+            else
+                qd_ctl_select_track(&A, S.shift && n < 2 ? n + 4 : n);
         }
         break;
     }
 }
 
+/* The power button is a SysEx from the surface, F0 00 21 1D 01 01 3A <bits> <battery> 00 F7: a status report, sent on
+ * every change; bit 3 of <bits> is the button held. Every report must be answered with F0 00 21 1D 01 01 39 02 F7, as
+ * Move's own software does, or the surface reports the button once and then goes quiet (movy-host's finding:
+ * schwung-movy host/surface_keys.c, whose matcher this is) */
+static void power_feed(const uint8_t p[4])
+{
+    static const int16_t WANT[4][4] = { { 0x04, 0xF0, 0x00, 0x21 }, { 0x04, 0x1D, 0x01, 0x01 }, { 0x04, 0x3A, -1, -1 },
+                                        { 0x06, 0x00, 0xF7, -1 } };
+    static const uint8_t ACK[3][4] = { { 0x04, 0xF0, 0x00, 0x21 }, { 0x04, 0x1D, 0x01, 0x01 }, { 0x07, 0x39, 0x02, 0xF7 } };
+    int i;
+    for (i = 0; i < 4; i++) {
+        const int got = i == 0 ? p[0] & 0x0F : p[i];
+        if (WANT[S.pw_stage][i] >= 0 && got != WANT[S.pw_stage][i]) {
+            S.pw_stage = 0;
+            return;
+        }
+    }
+    if (S.pw_stage == 2)
+        memcpy(S.pw_cmd, p + 1, 3);
+    if (++S.pw_stage < 4)
+        return;
+    S.pw_stage = 0;
+    for (i = 0; i < 3; i++)
+        ring_push(&g_led, ACK[i]);
+    if ((S.pw_cmd[1] & 0x08) && !(S.pw_status & 0x08)) {    /* the button's bit going up: a press */
+        S.over = OV_POWER;
+        S.menu_sel = 0;
+    }
+    S.pw_status = S.pw_cmd[1];
+}
+
 static void input(const uint8_t p[4])
 {
     const int cable = p[0] >> 4, st = p[1] & 0xF0;
+    if (cable == 0 && ((p[0] & 0x0F) == 0x04 || (p[0] & 0x0F) == 0x06 || S.pw_stage))
+        power_feed(p);
     if (cable == 2) {                                   /* USB-A: MIDI in, as the FM-1's */
         if (p[1] >= 0x80)
             qd_app_midi(&A, p[1], p[2], p[3]);
@@ -803,7 +900,8 @@ static void leds(void)
         else if (S.mode == MV_FX)
             c = (uint8_t)(S.fpage == i || (i == 7 && S.fpage == 8) ? C_WHITE : C_BLUE);
         else if (S.mode == MV_HOME)                     /* the tracks: the selected one, a flash as each plays */
-            c = (uint8_t)(i >= QD_TRACKS ? C_OFF : A.sel == i ? C_WHITE : qd_ctl_trig_flash(&A, i) ? C_LTBLUE : C_BLUE);
+            c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.mute >> i & 1u) ? C_RED : A.sel == i ? C_WHITE
+                          : qd_ctl_trig_flash(&A, i) ? C_LTBLUE : C_BLUE);
         else
             c = shade(L.key[QD_BLACK_KEY[i]], C_DKBLUE, C_BLUE, C_LTBLUE);
         led_note(N_PAD0 + 24 + i, c);
@@ -931,6 +1029,86 @@ static int osc_wave(int w)
          : w == QD_SW_PUL ? SCR_W_PULSE : w == QD_SW_NOI ? SCR_W_NOISE : SCR_W_MIX;
 }
 
+/* The room (the core's ui_room.c, laid out again for this screen): the page's notes as platforms by pitch, a robot on
+ * a step that holds locks, the agent running the notes as the playhead and leaping between them */
+static void room_draw(mono_t *m, uint32_t now_ms)
+{
+    static ui_held_t h;
+    static ui_lane_t l;
+    struct { float at, len; int x, y, i; } st[18];
+    scr_room_t r;
+    int i, n = 0, k = -1;
+    qd_view_edit(&A, &h, &l);
+    memset(&r, 0, sizeof r);
+    r.ntrack = QD_TRACKS;
+    r.sel = A.sel;
+    r.mute = l.trk_mute;
+    for (i = 0; i < QD_TRACKS; i++)
+        if (l.trk_flash[i] >= 0.f && l.trk_flash[i] < 0.09f)
+            r.flash |= (uint8_t)(1u << i);
+    st[n].at = -0.01f, st[n].len = 0.f, st[n].x = 13, st[n].y = SCR_RM_FLOOR, st[n].i = -1, n++;   /* the door in */
+    for (i = 0; i < 16; i++) {
+        const ui_lcol_t *c = &l.col[i];
+        const int noted = c->in_range && c->on && c->type != 2 && c->nnote > 0;
+        r.col[i].held = c->held;
+        r.col[i].guard = (uint8_t)(c->in_range && c->on && (c->nplock || c->type == 2));
+        if (noted) {
+            const int span = l.span > 0 ? l.span : 16;
+            int top = c->note[0], j, y, w;
+            for (j = 1; j < c->nnote && j < 6; j++)
+                top = c->note[j] > top ? c->note[j] : top;
+            y = SCR_RM_BOT - (top - l.lo) * (SCR_RM_BOT - SCR_RM_TOP) / span;
+            y = y < SCR_RM_TOP ? SCR_RM_TOP : y > SCR_RM_BOT ? SCR_RM_BOT : y;
+            w = c->inf ? 127 - SCR_RM_X(i) : (int)(c->len * 7.f);
+            w = w < 5 ? 5 : w > 127 - SCR_RM_X(i) ? 127 - SCR_RM_X(i) : w;
+            r.col[i].on = 1, r.col[i].y = (uint8_t)y, r.col[i].w = (uint8_t)w;
+            st[n].at = (float)i + (float)c->micro / 24.f;
+            st[n].len = c->len;
+            st[n].x = SCR_RM_X(i) + 2 + c->micro * 7 / 24;
+            st[n].y = y;
+            st[n].i = i;
+            n++;
+        }
+    }
+    st[n].at = 16.f, st[n].len = 0.f, st[n].x = 125, st[n].y = SCR_RM_FLOOR, st[n].i = -1, n++;   /* .. and out */
+    r.agent_x = -1;
+    if (l.pos >= 0.f) {
+        const float pos = l.pos;
+        if (n == 2) {                                   /* an empty room: he runs the floor */
+            r.agent_x = 14 + (int)(pos * 7.f);
+            r.agent_y = SCR_RM_FLOOR;
+            r.agent_pose = (int)(pos * 4.f) & 1;
+        } else {
+            float hold, t0;
+            for (i = 0; i < n; i++)
+                if (st[i].at <= pos)
+                    k = i;
+            k = k < 0 ? 0 : k > n - 2 ? n - 2 : k;
+            hold = st[k].len < st[k + 1].at - st[k].at - 0.5f ? st[k].len : st[k + 1].at - st[k].at - 0.5f;
+            if (hold < 0.f || st[k].i < 0)
+                hold = 0.f;
+            t0 = st[k].at + hold;
+            if (pos < t0) {                             /* on the platform: running its gate */
+                r.agent_x = st[k].x + (int)((pos - st[k].at) * 7.f);
+                r.agent_y = st[k].y;
+                r.agent_pose = (int)(pos * 4.f) & 1;
+            } else {                                    /* the leap to the next */
+                const float gap = st[k + 1].at - t0 > 0.05f ? st[k + 1].at - t0 : 0.05f;
+                const float u = (pos - t0) / gap > 1.f ? 1.f : (pos - t0) / gap;
+                const float x0 = (float)st[k].x + hold * 7.f;
+                float J = 3.f + 2.f * gap;
+                J = J > 9.f ? 9.f : J;
+                r.agent_x = (int)(x0 + ((float)st[k + 1].x - x0) * u + 0.5f);
+                r.agent_y = (int)((float)st[k].y + (float)(st[k + 1].y - st[k].y) * u - J * 4.f * u * (1.f - u) + 0.5f);
+                r.agent_pose = 2;
+            }
+        }
+    } else if (!l.playing) {                            /* stopped: he waits at the door */
+        r.agent_x = 15, r.agent_y = SCR_RM_FLOOR, r.agent_pose = 0;
+    }
+    scr_room(m, &r, now_ms);
+}
+
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
     if (S.mode == MV_SOUND) {
@@ -947,6 +1125,23 @@ static void page_draw(mono_t *m, uint32_t now_ms)
                     snd_frac(page, 3, v.v[3]));
             return;
         }
+        if (v.draw == UI_SD_LFO) {                      /* its shape is on the page beside it (the WAVE's name) */
+            ui_snd_t w;
+            const char *n;
+            const int dep = snd_frac(page, 2, v.v[2]);
+            snd_view(g_snd_core[S.spage][4], &w);
+            n = w.txt[0];
+            scr_lfo(m, !strncmp(n, "TRI", 3) ? 1 : !strncmp(n, "SAW", 3) || !strncmp(n, "RAMP", 4) ? 2
+                       : !strncmp(n, "SQ", 2) || !strncmp(n, "PUL", 3) ? 3
+                       : !strncmp(n, "RND", 3) || !strncmp(n, "RAN", 3) || !strncmp(n, "S&H", 3) || !strncmp(n, "NOI", 3) ? 4 : 0,
+                    snd_frac(page, 0, v.v[0]), dep < 0 ? 500 : dep > 500 ? (dep - 500) * 2 : (500 - dep) * 2, now_ms);
+            return;
+        }
+        if ((v.draw == UI_SD_WORD || v.draw == UI_SD_SAY || v.draw == UI_SD_DIGI) && v.wave && v.wave_n) {
+            scr_word(m, v.wave, v.wave_n, v.draw == UI_SD_WORD ? snd_frac(page, 2, v.v[2]) : -1,
+                     v.draw == UI_SD_WORD ? snd_frac(page, 3, v.v[3]) : -1);
+            return;
+        }
         if (v.draw == UI_SD_FILTER) {
             const char c = v.txt[4][0];                 /* the mode by its name: OFF, LOW .., BAND .., HIGH .. */
             scr_filter(m, !strcmp(v.txt[4], "OFF") ? 0 : c == 'H' ? 3 : c == 'B' || c == 'N' ? 2 : 1,
@@ -956,8 +1151,15 @@ static void page_draw(mono_t *m, uint32_t now_ms)
         core_frame(now_ms);                             /* the core's own picture of the page, without its labels */
         scr_core_crop(m, g_lcd, 0, 14);
     } else if (S.mode == MV_FX) {
-        core_frame(now_ms);
-        scr_core_crop(m, g_lcd, 12, 22);                /* (its lift's shaft at the left: not shown) */
+        static const uint8_t KIND[9] = { SCR_FX_SENDS, SCR_FX_CHORUS, SCR_FX_ECHO, SCR_FX_ROOM, SCR_FX_CRUSH, SCR_FX_ROBOT,
+                                         SCR_FX_WARP, SCR_FX_GLITCH, SCR_FX_TV };
+        kinfo_t ki;
+        int val[8], i;
+        for (i = 0; i < 8; i++) {
+            knob_info(i, &ki);
+            val[i] = ki.ok ? ki.frac : -1;
+        }
+        scr_fx(m, KIND[S.fpage], val, now_ms);
     } else if (mix_native()) {
         ui_mix_t v;
         int level[6], mute[6], meter[6], i;
@@ -982,10 +1184,12 @@ static void page_draw(mono_t *m, uint32_t now_ms)
             scr_knob(m, nm, r.type == QD_TRIG_NONE ? "EMPTY" : notes, -1);
             return;
         }
+        if (S.mode == MV_HOME && S.scr == QD_SCR_EDIT) {
+            room_draw(m, now_ms);
+            return;
+        }
         core_frame(now_ms);
-        if (S.mode == MV_HOME && S.scr == QD_SCR_EDIT)
-            scr_core_crop(m, g_lcd, 0, 24);             /* the room, between its head and its foot */
-        else if (S.mode == MV_MIX)
+        if (S.mode == MV_MIX)
             scr_core_crop(m, g_lcd, 0, 14);
         else
             scr_core_crop(m, g_lcd, 0, S.win_top);
@@ -1005,6 +1209,18 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
         done = 1;
     } else if (S.over == OV_SETUP) {
         scr_menu(&m, SETUP_ITEMS, SETUP_N, S.menu_sel);
+        done = 1;
+    } else if (S.over == OV_POWER) {
+        scr_menu(&m, POWER_ITEMS, 2, S.menu_sel);
+        done = 1;
+    } else if (S.loop_down && S.mode != MV_IDLE) {      /* Loop held: the pattern playing, the one queued after it */
+        char v[12];
+        const int cur = A.seq.cur, nx = A.seq.sw_pat;
+        if (nx >= 0 && nx != cur)
+            snprintf(v, sizeof v, "%c%02d>%c%02d", 'A' + cur / 16, cur % 16 + 1, 'A' + nx / 16, nx % 16 + 1);
+        else
+            snprintf(v, sizeof v, "%c%02d", 'A' + cur / 16, cur % 16 + 1);
+        scr_knob(&m, "PATTERN", v, -1);
         done = 1;
     } else if (S.over == OV_TEMPO) {
         char v[8];
@@ -1049,6 +1265,32 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
     changed = memcmp(packed, g_last, MONO_PACKED) != 0;
     memcpy(g_last, packed, MONO_PACKED);
     return changed;
+}
+
+void egm_describe(char *out, int cap)
+{
+    snprintf(out, (size_t)cap, "mode=%d over=%d track=%d screen=%d playing=%d bpm=%d pat=%d nheld=%d rec=%d spage=%d fpage=%d "
+             "mute=%x page=%d shift=%d", S.mode, S.over, A.sel + 1, qd_view_screen(&A), A.seq.playing, qd_seq_bpm(&A.seq),
+             A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.ui.page[A.sel] + 1, S.shift);
+    {   /* the page shown: its trigs, and those with notes */
+        static ui_held_t h;
+        static ui_lane_t l;
+        unsigned on = 0, noted = 0;
+        int i;
+        qd_view_edit(&A, &h, &l);
+        for (i = 0; i < 16; i++) {
+            on |= (unsigned)(l.col[i].on != 0) << i;
+            noted |= (unsigned)(l.col[i].on && l.col[i].nnote > 0 && l.col[i].in_range && l.col[i].type != 2) << i;
+        }
+        {
+            const qd_pattern_t *P = qd_ctl_cpat(&A);
+            int n = 0;
+            for (i = 0; i < QD_NSTEP; i++)
+                n += qd_step_is_on(qd_step(P, A.sel, i)) != 0;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " steps=%d", n);
+        }
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " trigs=%04x noted=%04x lo=%d span=%d", on, noted, l.lo, l.span);
+    }
 }
 
 void egm_state(int *track, int *screen, int *playing)

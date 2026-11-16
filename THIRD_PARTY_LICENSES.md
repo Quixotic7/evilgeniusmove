@@ -18,3 +18,6 @@ This repository's own code:
 | `src/` except `heal.c` | MPL-2.0 | |
 | `src/heal.c` | MIT | after movy-host's `host/heal/heal.c`, Copyright (c) 2026 megadake (https://github.com/DimaDake/schwung-movy) |
 | The SPI page layout and launch contract in `src/plat_move.c` | MIT | from Schwung's `src/lib/schwung_spi_lib.h`, Copyright (c) 2025-2026 Charles Vestal (https://github.com/charlesvestal/schwung) |
+
+`make package NO_SAM=1` builds without SAM (`src/say_stub.c` stands in for the core's speech). The stored VOX words
+in the core were rendered with SAM and stay in either build.

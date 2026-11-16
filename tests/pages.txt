@@ -1,0 +1,126 @@
+# every native picture, and the controls added with them
+tap 85
+wait 300
+tap 85
+wait 500
+note 68 100              # a few notes into steps 1, 5, 9 of track 1
+note 16 100
+wait 300
+note 68 100
+wait 60
+note 68 0
+note 16 0
+wait 50
+note 20 100
+wait 300
+note 73 100
+wait 60
+note 73 0
+note 20 0
+wait 50
+note 24 100
+wait 300
+note 71 100
+wait 60
+note 71 0
+cc 71 4                  # a lock on step 9's velocity
+note 24 0
+wait 900
+shot 01-room
+wait 300
+shot 02-room-later
+cc 88 127                # Mute held + track pad 2
+note 93 100
+wait 30
+note 93 0
+cc 88 0
+wait 100
+state muted
+shot 03-room-muted
+cc 58 127                # Loop held: the pattern
+wait 100
+shot 04-pattern
+note 18 100              # .. step 3: pattern A03 queued
+wait 30
+note 18 0
+wait 60
+shot 05-pattern-queued
+cc 58 0
+tap 52                   # FX
+wait 900
+shot 10-fx-chorus
+note 92 100
+wait 30
+note 92 0
+wait 1300
+shot 11-fx-sends
+note 94 100
+wait 30
+note 94 0
+wait 1300
+shot 12-fx-echo
+note 95 100
+wait 30
+note 95 0
+wait 1300
+shot 13-fx-room
+note 96 100
+wait 30
+note 96 0
+wait 1300
+shot 14-fx-crush
+note 97 100
+wait 30
+note 97 0
+wait 1300
+shot 15-fx-robot
+note 98 100
+wait 30
+note 98 0
+wait 1300
+shot 16-fx-warp
+note 99 100
+wait 30
+note 99 0
+wait 1300
+shot 17-fx-glitch
+note 99 100
+wait 30
+note 99 0
+wait 1300
+shot 18-fx-tv
+tap 118                  # SOUND
+wait 900
+note 97 100              # LFO 1
+wait 30
+note 97 0
+wait 900
+shot 20-lfo
+note 96 100              # the voice: WORD
+wait 30
+note 96 0
+wait 900
+shot 21-word
+cc 71 8
+wait 900
+shot 22-word-turned
+tap 50
+wait 200
+note 20 100              # step 5 held: slide
+wait 300
+note 7 127
+cc 78 8
+wait 60
+shot 30-slide
+note 7 0
+note 20 0
+pkt 04 f0 00 21          # the power button
+pkt 04 1d 01 01
+pkt 04 3a 08 50
+pkt 06 00 f7 00
+wait 60
+shot 31-power
+state power
+tap 51
+state end
+leds

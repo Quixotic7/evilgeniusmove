@@ -9,6 +9,7 @@
  *     note N VEL             a surface note (pads 68..99, steps 16..31, touches 0..9); VEL 0: released
  *     cc N V                 a surface CC (buttons: 127 down, 0 up; encoders: 1..63 clockwise, 127..65 back)
  *     tap N                  a button: cc N 127, 30 ms, cc N 0, 30 ms
+ *     pkt A B C D            a raw USB-MIDI packet (hex), as the SPI mailbox gives it
  *     shot NAME              OUT_DIR/NAME.pgm, the screen now
  *     leds                   the LED packets sent since the last one, printed
  *     state NAME             the selected track, the core's screen and the transport, printed
@@ -95,6 +96,13 @@ int main(int argc, char **argv)
         if (!strcmp(cmd, "wait")) run((uint32_t)atoi(a));
         else if (!strcmp(cmd, "note")) midi(atoi(b) ? 0x90 : 0x80, atoi(a), atoi(b));
         else if (!strcmp(cmd, "cc")) midi(0xB0, atoi(a), atoi(b));
+        else if (!strcmp(cmd, "pkt")) {                 /* a raw USB-MIDI packet, four hex bytes */
+            unsigned q[4] = { 0, 0, 0, 0 };
+            uint8_t p[4];
+            sscanf(line, "%*s %x %x %x %x", &q[0], &q[1], &q[2], &q[3]);
+            p[0] = (uint8_t)q[0], p[1] = (uint8_t)q[1], p[2] = (uint8_t)q[2], p[3] = (uint8_t)q[3];
+            egm_midi_in(p);
+        }
         else if (!strcmp(cmd, "tap")) { midi(0xB0, atoi(a), 127); run(30); midi(0xB0, atoi(a), 0); run(30); }
         else if (!strcmp(cmd, "shot")) printf("shot %-16s %5d pixels lit, %u ms\n", a, shot(argv[2], a), (unsigned)now);
         else if (!strcmp(cmd, "leds")) { printf("leds %u packets, peak %ld\n", (unsigned)led_count, peak); led_count = 0; peak = 0; }
@@ -118,7 +126,10 @@ int main(int argc, char **argv)
         else if (!strcmp(cmd, "state")) {
             int t, sc, pl;
             egm_state(&t, &sc, &pl);
-            printf("state %-16s track %d screen %d playing %d\n", a, t + 1, sc, pl);
+            char d[256];
+            egm_describe(d, sizeof d);
+            (void)t, (void)sc, (void)pl;
+            printf("state %-14s %s\n", a, d);
         }
         else if (!strcmp(cmd, "wav")) {
             static const unsigned char H[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',

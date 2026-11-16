@@ -5,6 +5,8 @@
 #   make test                the simulator run through tests/smoke.txt (pictures into build/shots)
 #   make move                build/move/evilgenius-host and evilgenius-heal for the Move (aarch64, in Docker)
 #   make package             dist/evilgenius-module.tar.gz, what Schwung Manager installs
+#   make package NO_SAM=1    .. without SAM, the speech synthesizer that has no licence (src/say_stub.c says
+#                            what goes with it); make clean first when changing it
 #
 # The EvilGenius core is not copied here: EG points at a checkout of it (https://github.com/Quixotic7/evilgenius).
 EG ?= ../evilgenius
@@ -22,18 +24,18 @@ CORE_SRC := $(addprefix $(CORE)/app/,app.c ctl.c ctl_step.c ctl_rec.c ctl_leds.c
             $(CORE)/gfx/qd_gfx_plutovg.c \
             $(addprefix $(CORE)/seq/,model.c pattern.c seq.c player.c demo.c chord.c scale.c sounds.c clip.c) \
             $(CORE)/voice/quad/quad_voice.c $(CORE)/voice/sid/sid.c $(CORE)/voice/pool.c $(CORE)/voice/mix.c \
-            $(CORE)/voice/fx/qd_fx.c $(CORE)/voice/sam/say.c
+            $(CORE)/voice/fx/qd_fx.c $(if $(NO_SAM),,$(CORE)/voice/sam/say.c)
 PVG_SRC := $(wildcard $(PVG)/source/*.c)
 INC := -Isrc $(addprefix -I$(CORE)/,app ui gfx seq voice voice/quad voice/sid voice/fx voice/sam store tests) -I$(PVG)/include
 DEFS := -DSID_COMB_CONST -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD -DQD_USB_HOST=1
 
-EGM_SRC := src/egm.c src/flash.c src/mono.c src/screens.c
+EGM_SRC := src/egm.c src/flash.c src/mono.c src/screens.c $(if $(NO_SAM),src/say_stub.c,)
 PLAT_SRC := $(if $(filter move,$(TARGET)),src/plat_move.c,src/plat_sim.c)
 BIN := $(if $(filter move,$(TARGET)),evilgenius-host,egm-sim)
 LIBS := -lm -lpthread $(if $(filter move,$(TARGET)),-lrt -static,)
 
 CORE_OBJ := $(addprefix $(B)/core-,$(notdir $(CORE_SRC:.c=.o)))
-SAM_OBJ := $(addprefix $(B)/sam-,$(notdir $(SAM_SRC:.c=.o)))
+SAM_OBJ := $(if $(NO_SAM),,$(addprefix $(B)/sam-,$(notdir $(SAM_SRC:.c=.o))))
 PVG_OBJ := $(addprefix $(B)/pvg-,$(notdir $(PVG_SRC:.c=.o)))
 EGM_OBJ := $(addprefix $(B)/,$(notdir $(EGM_SRC:.c=.o) $(PLAT_SRC:.c=.o)))
 
@@ -53,7 +55,7 @@ DOCKER_IMAGE ?= evilgenius-move-build
 move:
 	docker build -q -t $(DOCKER_IMAGE) docker
 	docker run --rm -v "$(abspath .)":/w -v "$(abspath $(EG))":/eg -w /w $(DOCKER_IMAGE) \
-	    make TARGET=move EG=/eg CC=aarch64-linux-gnu-gcc build/move/evilgenius-host build/move/evilgenius-heal
+	    make TARGET=move EG=/eg CC=aarch64-linux-gnu-gcc NO_SAM=$(NO_SAM) build/move/evilgenius-host build/move/evilgenius-heal
 
 package: move
 	scripts/package.sh

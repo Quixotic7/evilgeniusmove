@@ -57,6 +57,7 @@ static uint8_t *g_map;
 static volatile sig_atomic_t g_stop;
 static volatile int g_audio_stop;
 static int g_audio_tid;
+static volatile int g_late;
 static char g_dir[400];
 
 /* the screen: the main thread publishes a frame, the audio thread serves it. A seqlock: never a torn frame out */
@@ -210,6 +211,7 @@ static void *audio_main(void *arg)
         if (t - report > 10000000u) {
             if (late)
                 logf_("audio: %d late transfer(s) in the last 10 s", late);
+            g_late += late;
             late = 0, report = t;
         }
         {
@@ -265,6 +267,87 @@ static void rt_help(void)
 
 static void on_term(int sig) { (void)sig; g_stop = 1; }
 
+/* ------------------------------------------------------------------ the test hook --- */
+/* Only when /dev/shm/egm-test exists at the start (a reboot clears it): surface events can be written into the FIFO
+ * /dev/shm/egm-cmd, a line each ("note N VEL", "cc N VALUE", as the simulator's script), and the app's state is
+ * written to /dev/shm/egm-state four times a second, so the unit can be checked over ssh with nobody at it */
+static int g_test_fd = -1;
+
+static void test_open(void)
+{
+    if (access("/dev/shm/egm-test", F_OK) != 0)
+        return;
+    unlink("/dev/shm/egm-cmd");
+    if (mkfifo("/dev/shm/egm-cmd", 0666) != 0)
+        return;
+    chmod("/dev/shm/egm-cmd", 0666);
+    g_test_fd = open("/dev/shm/egm-cmd", O_RDWR | O_NONBLOCK | O_CLOEXEC);   /* (RDWR: never an end of file) */
+    logf_("test hook: on (/dev/shm/egm-cmd, /dev/shm/egm-state)");
+}
+
+static void test_poll(uint32_t ms, int late)
+{
+    static char buf[512];
+    static int n;
+    static uint32_t last;
+    ssize_t r;
+    if (g_test_fd < 0)
+        return;
+    while ((r = read(g_test_fd, buf + n, sizeof buf - 1 - (size_t)n)) > 0) {
+        char *nl;
+        n += (int)r;
+        buf[n] = 0;
+        while ((nl = strchr(buf, '\n'))) {
+            char cmd[8] = "";
+            int a = 0, b = 0;
+            *nl = 0;
+            if (sscanf(buf, "%7s %d %d", cmd, &a, &b) == 3) {
+                uint8_t p[4] = { 0, 0, (uint8_t)a, (uint8_t)b };
+                if (!strcmp(cmd, "note"))
+                    p[0] = b ? 0x09 : 0x08, p[1] = b ? 0x90 : 0x80;
+                else if (!strcmp(cmd, "cc"))
+                    p[0] = 0x0B, p[1] = 0xB0;
+                if (p[1])
+                    egm_midi_in(p);
+            }
+            n -= (int)(nl + 1 - buf);
+            memmove(buf, nl + 1, (size_t)n + 1);
+        }
+        if (n >= (int)sizeof buf - 1)
+            n = 0;
+    }
+    if (ms - last >= 250u) {
+        char line[400];
+        FILE *f;
+        last = ms;
+        egm_describe(line, sizeof line);
+        if ((f = fopen("/dev/shm/egm-state.tmp", "w"))) {
+            fprintf(f, "ms=%u late=%d %s\n", (unsigned)ms, late, line);
+            fclose(f);
+            rename("/dev/shm/egm-state.tmp", "/dev/shm/egm-state");
+        }
+    }
+}
+
+/* the power off: Move's own power service over D-Bus, which ableton may call (movy-host's power.c). The call answers
+ * at once and the power goes seconds later, so this process then HOLDS, deaf to TERM: were it to exit, schwung's
+ * launcher would start Move again and the power cut would catch it mid-boot (a failed boot, to schwung's counter) */
+static void power_off(void)
+{
+    char *argv[] = { "/usr/bin/dbus-send", "--system", "--print-reply", "--dest=com.ableton.system",
+                     "/com/ableton/System/Power", "com.ableton.system.shutDown", NULL };
+    pid_t child;
+    int i;
+    logf_("power: off, by com.ableton.system");
+    signal(SIGTERM, SIG_IGN);
+    if (posix_spawn(&child, argv[0], NULL, NULL, argv, environ) != 0) {
+        logf_("power: cannot run %s; leaving to Move instead", argv[0]);
+        return;
+    }
+    for (i = 0; i < 120; i++)
+        sleep(1);
+}
+
 int main(int argc, char **argv)
 {
     char flash[480], *slash;
@@ -274,7 +357,7 @@ int main(int argc, char **argv)
     uint64_t t0, next;
     uint32_t last_frame = 0;
     uint8_t packed[DISPLAY_SIZE];
-    int rc;
+    int rc, how = 0;
     (void)argc;
     /* the module's own directory: the store's image lives beside the program */
     if (!realpath(argv[0], g_dir))
@@ -313,13 +396,15 @@ int main(int argc, char **argv)
     /* again now the helper has lifted RLIMIT_MEMLOCK: as ableton the first try has no room */
     logf_("rt: memory %s", mlockall(MCL_CURRENT | MCL_FUTURE) == 0 ? "locked" : "NOT locked");
 
+    test_open();
     t0 = now_us();
     next = t0;
     while (!g_stop) {
         const uint64_t t = now_us();
         const uint32_t ms = (uint32_t)((t - t0) / 1000u);
-        if (egm_ui_step(ms))
+        if ((how = egm_ui_step(ms)))
             break;
+        test_poll(ms, g_late);
         if (ms - last_frame >= 33u) {
             last_frame = ms;
             if (egm_frame(packed, ms))
@@ -331,10 +416,12 @@ int main(int argc, char **argv)
         else
             next = now_us();                            /* behind (a frame took long): no burst to catch up */
     }
-    logf_("evilgenius-host: closing (%s)", g_stop ? "stopped" : "the player left");
+    logf_("evilgenius-host: closing (%s)", g_stop ? "stopped" : how == 2 ? "power off" : "the player left");
     g_audio_stop = 1;
     pthread_join(audio, NULL);
     spi_close();
     egm_shutdown();
+    if (how == 2 && !g_stop)
+        power_off();
     return 0;
 }

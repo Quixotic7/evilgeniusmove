@@ -20,8 +20,10 @@ void egm_midi_in(const uint8_t pkt[4]);                 /* a USB-MIDI packet fro
 void egm_audio(int16_t *stereo, int frames);            /* 44.1 kHz, interleaved */
 int egm_leds_take(uint8_t out[][4], int max);           /* packets for the surface (cable 0); returns how many */
 
-int egm_ui_step(uint32_t now_ms);                       /* 1: the player asked to leave (Shift + volume touch + wheel click) */
+int egm_ui_step(uint32_t now_ms);                       /* 1: the player asked to leave (back to Move); 2: to power off */
 int egm_frame(uint8_t packed[1024], uint32_t now_ms);   /* the screen now, packed for the panel; 1: it changed */
+/* for the checks (the simulator, the unit's test hook): the state as a line of name=value words */
+void egm_describe(char *out, int cap);
 /* for the simulator's checks: the selected track, the core's screen (QD_SCR_*), playing */
 void egm_state(int *track, int *screen, int *playing);
 /* for the simulator: the core's own screen drawn now (240 x 240 RGB565 big-endian) */

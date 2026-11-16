@@ -28,6 +28,27 @@ void scr_mix(mono_t *m, const int *level, const int *mute, const int *meter, int
 void scr_eight(mono_t *m, const char *const *lab, const char *const *val, const int *frac, int n);
 /* the FX tower's lift between two floors; t 0..1000 through the ride */
 void scr_lift(mono_t *m, const char *from, const char *to, int up, int t);
+/* the room: the page's sixteen steps as platforms (y their top row, w their width), a robot on a step that holds
+ * locks, the agent (x < 0: none; pose 0, 1 running, 2 in the air), the tracks' lift at the left */
+#define SCR_RM_X(i) (13 + (i) * 7 + (i) / 4)
+#define SCR_RM_TOP 12
+#define SCR_RM_BOT 48
+#define SCR_RM_FLOOR 57
+typedef struct {
+    struct { uint8_t on, guard, held, y, w; } col[16];
+    int agent_x, agent_y, agent_pose;
+    int ntrack, sel;
+    uint8_t mute, flash;                /* bit t: track t not heard, playing a trig now */
+} scr_room_t;
+void scr_room(mono_t *m, const scr_room_t *r, uint32_t ms);
+/* an FX floor's picture from its values, in knob order (0..1000, < 0 none) */
+enum { SCR_FX_SENDS, SCR_FX_CHORUS, SCR_FX_ECHO, SCR_FX_ROOM, SCR_FX_CRUSH, SCR_FX_ROBOT, SCR_FX_WARP, SCR_FX_GLITCH,
+       SCR_FX_TV };
+void scr_fx(mono_t *m, int kind, const int *v, uint32_t ms);
+/* an LFO: shape 0 sine, 1 triangle, 2 saw, 3 square, 4 random; speed and depth 0..1000 */
+void scr_lfo(mono_t *m, int shape, int speed, int depth, uint32_t ms);
+/* a voice's word: n 4-bit samples, two a byte, the high nibble first; its start and end 0..1000 (< 0 none) */
+void scr_word(mono_t *m, const uint8_t *nib, uint32_t n, int start, int end);
 /* a short menu: three rows shown, the chosen one a solid bar */
 void scr_menu(mono_t *m, const char *const *items, int n, int sel);
 

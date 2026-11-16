@@ -1,0 +1,25 @@
+# Record arms; a pad played while it runs lands in the pattern
+tap 85
+wait 300
+tap 85
+wait 300
+cc 41 127               # track 3
+cc 41 0
+wait 100
+state before
+tap 86
+wait 200
+state armed
+note 70 100
+wait 150
+note 70 0
+wait 400
+note 72 100
+wait 150
+note 72 0
+wait 2200
+state after
+tap 86
+wait 200
+state off
+shot rec-room
