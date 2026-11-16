@@ -1,0 +1,10 @@
+{
+    "id": "evilgenius",
+    "name": "EvilGenius",
+    "version": "0.1.0",
+    "api_version": 2,
+    "author": "Quixotic7",
+    "description": "SID chip groovebox: the EvilGenius FM-1 firmware as a standalone instrument on Move",
+    "component_type": "tool",
+    "standalone": true
+}

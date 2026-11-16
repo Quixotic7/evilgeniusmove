@@ -1,0 +1,88 @@
+# the simulator's smoke run: the Move's pages, one shot each
+shot 01-intro
+tap 85                  # Play: out of the title
+wait 300
+tap 85                  # .. and playing
+wait 900
+shot 02-home-room
+tap 118                 # Sampling: the sound editor
+wait 100
+shot 03-sound-name
+wait 900
+shot 04-osc1
+note 0 127              # knob 1 touched
+wait 60
+shot 05-knob-touch
+cc 71 8                 # .. and turned
+wait 60
+shot 06-knob-turned
+note 0 0
+wait 900
+shot 07-osc1-after
+note 9 127              # the wheel touched: all eight
+wait 60
+shot 08-all-eight
+note 9 0
+note 94 100             # top row, pad 3: the envelopes
+wait 30
+note 94 0
+wait 900
+shot 09-env1
+note 95 100             # pad 4: the filter
+wait 30
+note 95 0
+wait 900
+shot 10-filter
+note 4 127              # knob 5: the filter envelope's attack
+cc 75 8
+wait 60
+shot 11-filter-knob5
+note 4 0
+tap 52                  # Capture: FX
+wait 900
+shot 12-fx-chorus
+cc 14 1                 # the wheel: the next floor
+wait 200
+shot 13-lift
+wait 400
+shot 14-fx-name
+wait 900
+shot 15-fx-echo
+tap 88                  # Mute: the mix
+wait 900
+shot 16-mix
+cc 73 124               # knob 3 down: track 3's fader
+cc 73 124
+cc 73 124
+wait 60
+shot 17-mix-knob
+wait 900
+cc 49 127               # Shift + step 2: setup
+note 17 100
+wait 30
+note 17 0
+cc 49 0
+wait 60
+shot 18-setup
+cc 14 1
+wait 60
+shot 19-setup-exit
+tap 51                  # Back
+cc 49 127               # Shift + step 5: tempo
+note 20 100
+wait 30
+note 20 0
+cc 49 0
+cc 14 5
+wait 60
+shot 20-tempo
+tap 51
+tap 50                  # Menu: home
+wait 300
+note 68 100             # a note pad
+wait 200
+note 68 0
+wait 300
+shot 21-home-again
+leds
+state end

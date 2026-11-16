@@ -1,0 +1,37 @@
+# the surface's mapping, checked by state lines
+state start
+tap 85                  # Play
+wait 200
+state playing
+cc 41 127               # Track 3 pressed and let go
+wait 40
+cc 41 0
+wait 100
+state track3
+cc 49 127               # Shift + Track 2: track 6
+cc 42 127
+wait 40
+cc 42 0
+cc 49 0
+wait 100
+state track6
+cc 43 127
+wait 40
+cc 43 0
+wait 100
+state track1
+tap 118                 # Sampling: the sound editor
+wait 100
+state sound
+tap 51                  # Back
+wait 100
+state back
+tap 88                  # Mute: the mix
+wait 100
+state mix
+tap 50                  # Menu: home
+wait 100
+state home
+tap 85
+wait 200
+state stopped
