@@ -1,0 +1,84 @@
+# QA 2: a beat on track 1. Choose a sound, tap steps, hear it.
+tap 85
+wait 400
+leds
+note 68 110             # audition: bottom-left pad
+wait 300
+note 68 0
+wait 200
+leds
+state audition
+cc 49 127               # Shift + wheel: browse sounds
+cc 14 1
+wait 200
+shot 02a-shift-wheel
+state sound+1
+cc 14 1
+cc 14 1
+wait 200
+state sound+3
+cc 49 0
+wait 1200
+shot 02b-after-browse
+state after-browse
+note 16 100             # tap steps 1, 5, 9, 13
+wait 60
+note 16 0
+note 20 100
+wait 60
+note 20 0
+note 24 100
+wait 60
+note 24 0
+note 28 100
+wait 60
+note 28 0
+wait 100
+state four-on-floor
+shot 02c-room-4
+cc 88 127               # mute the demo tracks 4, 5, 6 to hear mine
+note 95 100
+note 95 0
+note 96 100
+note 96 0
+note 97 100
+note 97 0
+cc 88 0
+wait 100
+leds
+tap 85
+wait 2000
+leds
+state playing
+shot 02d-playing
+note 16 100             # tap step 1 again: removes it?
+wait 60
+note 16 0
+wait 100
+state toggled-off
+cc 56 127               # Undo
+cc 56 0
+wait 300
+shot 02e-undo
+state undone
+note 119 0
+cc 119 127              # Delete + step 5: does it clear the step, as on Move?
+note 20 100
+wait 80
+note 20 0
+cc 119 0
+wait 400
+shot 02f-delete-step
+state delete-step
+cc 60 127               # Copy held + step 9 then step 10: copy a step, as on Move?
+note 24 100
+wait 80
+note 24 0
+note 25 100
+wait 80
+note 25 0
+cc 60 0
+wait 400
+state copy-step
+shot 02g-copy
+tap 85

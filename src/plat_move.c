@@ -58,6 +58,8 @@ static volatile sig_atomic_t g_stop;
 static volatile int g_audio_stop;
 static int g_audio_tid;
 static volatile int g_late;
+static volatile int g_test_vol = 100;                   /* percent of the output: 100 unless the test hook is on (below) */
+static volatile int g_peak;                             /* the loudest sample before that, since the state was last written */
 static char g_dir[400];
 
 /* the screen: the main thread publishes a frame, the audio thread serves it. A seqlock: never a torn frame out */
@@ -228,6 +230,17 @@ static void *audio_main(void *arg)
         }
         memset(in, 0, MIDI_IN_MAX * 8);                 /* the mailbox keeps its events until overwritten: its only reader clears it */
         egm_audio(buf, FRAMES);
+        {
+            int vol = g_test_vol, pk = g_peak;
+            for (i = 0; i < FRAMES * 2; i++) {
+                int v = buf[i] < 0 ? -buf[i] : buf[i];
+                if (v > pk)
+                    pk = v;
+                if (vol < 100)
+                    buf[i] = (int16_t)(buf[i] * vol / 100);
+            }
+            g_peak = pk;
+        }
         if (fade < FADE_BLOCKS) {
             for (i = 0; i < FRAMES * 2; i++)
                 dst[i] = (int16_t)(buf[i] * fade / FADE_BLOCKS);
@@ -270,19 +283,28 @@ static void on_term(int sig) { (void)sig; g_stop = 1; }
 /* ------------------------------------------------------------------ the test hook --- */
 /* Only when /dev/shm/egm-test exists at the start (a reboot clears it): surface events can be written into the FIFO
  * /dev/shm/egm-cmd, a line each ("note N VEL", "cc N VALUE", as the simulator's script), and the app's state is
- * written to /dev/shm/egm-state four times a second, so the unit can be checked over ssh with nobody at it */
+ * written to /dev/shm/egm-state four times a second, so the unit can be checked over ssh with nobody at it.
+ * A TEST IS QUIET: the speaker is loud and nobody may be there to turn it down, so with the hook on the output is
+ * SILENT, or at the percent written in /dev/shm/egm-test (scripts/deploy.sh --test [PERCENT]). The state line's
+ * peak= is the level before that, so a silent run still shows that sound was made */
 static int g_test_fd = -1;
 
 static void test_open(void)
 {
-    if (access("/dev/shm/egm-test", F_OK) != 0)
+    FILE *f = fopen("/dev/shm/egm-test", "r");
+    int vol = 0;
+    if (!f)
         return;
+    if (fscanf(f, "%d", &vol) != 1)
+        vol = 0;
+    fclose(f);
+    g_test_vol = vol < 0 ? 0 : vol > 100 ? 100 : vol;
     unlink("/dev/shm/egm-cmd");
     if (mkfifo("/dev/shm/egm-cmd", 0666) != 0)
         return;
     chmod("/dev/shm/egm-cmd", 0666);
     g_test_fd = open("/dev/shm/egm-cmd", O_RDWR | O_NONBLOCK | O_CLOEXEC);   /* (RDWR: never an end of file) */
-    logf_("test hook: on (/dev/shm/egm-cmd, /dev/shm/egm-state)");
+    logf_("test hook: on (/dev/shm/egm-cmd, /dev/shm/egm-state), output at %d%%", g_test_vol);
 }
 
 static void test_poll(uint32_t ms, int late)
@@ -317,12 +339,13 @@ static void test_poll(uint32_t ms, int late)
             n = 0;
     }
     if (ms - last >= 250u) {
-        char line[400];
+        char line[700];
         FILE *f;
         last = ms;
         egm_describe(line, sizeof line);
         if ((f = fopen("/dev/shm/egm-state.tmp", "w"))) {
-            fprintf(f, "ms=%u late=%d %s\n", (unsigned)ms, late, line);
+            fprintf(f, "ms=%u late=%d vol=%d peak=%d %s\n", (unsigned)ms, late, g_test_vol, g_peak, line);
+            g_peak = 0;
             fclose(f);
             rename("/dev/shm/egm-state.tmp", "/dev/shm/egm-state");
         }

@@ -1,0 +1,76 @@
+# QA 8: a second pattern and an arrangement
+tap 85
+wait 400
+note 16 100             # something in A01, track 1
+wait 60
+note 16 0
+note 20 100
+wait 60
+note 20 0
+state a01
+cc 60 127               # Copy: the pattern
+cc 60 0
+wait 400
+shot 08a-copied
+cc 58 127               # Loop held
+wait 300
+shot 08b-loop-held
+note 17 100             # step 2: pattern A02
+wait 60
+note 17 0
+wait 200
+shot 08c-a02
+cc 58 0
+wait 300
+state a02-selected
+cc 49 127               # Shift + Copy: paste
+wait 400
+cc 60 127
+cc 60 0
+cc 49 0
+wait 500
+shot 08d-pasted
+state pasted
+note 24 100             # a variation
+wait 60
+note 24 0
+state variation
+tap 85                  # play, then queue A01
+wait 900
+cc 58 127
+wait 200
+note 16 100
+wait 60
+note 16 0
+wait 150
+shot 08e-queued
+cc 58 0
+state queued
+wait 4500
+state switched
+cc 58 127               # bank B on top pad 2
+wait 200
+note 93 100
+note 93 0
+wait 200
+shot 08f-bank
+note 16 100
+wait 60
+note 16 0
+cc 58 0
+wait 300
+state bank-b
+tap 58                  # Loop tapped: the core's tools page
+wait 900
+shot 08g-loop-tap
+state loop-tap
+tap 51
+wait 300
+state back
+cc 58 127               # how long is a pattern? the loop length: any control?
+cc 14 1
+wait 200
+shot 08h-loop-wheel
+cc 58 0
+state loop-wheel
+tap 85

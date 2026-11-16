@@ -84,7 +84,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: egm-sim SCRIPT OUT_DIR\n");
         return 2;
     }
-    egm_init(0);
+    egm_init(getenv("EGM_FLASH"));                    /* (a store's file, to check what is kept between runs) */
     run(100);
     while (fgets(line, sizeof line, f)) {
         char cmd[32] = "", a[128] = "", b[32] = "";
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         else if (!strcmp(cmd, "state")) {
             int t, sc, pl;
             egm_state(&t, &sc, &pl);
-            char d[256];
+            char d[700];
             egm_describe(d, sizeof d);
             (void)t, (void)sc, (void)pl;
             printf("state %-14s %s\n", a, d);

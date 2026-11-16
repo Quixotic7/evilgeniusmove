@@ -1,0 +1,85 @@
+# QA 3: the beat again without touching the sound browser; then step editing as a Move player would
+tap 85
+wait 400
+note 16 100
+wait 60
+note 16 0
+note 20 100
+wait 60
+note 20 0
+note 24 100
+wait 60
+note 24 0
+note 28 100
+wait 60
+note 28 0
+wait 100
+state four-on-floor
+shot 03a-room
+cc 88 127
+note 95 100
+note 95 0
+note 96 100
+note 96 0
+note 97 100
+note 97 0
+cc 88 0
+leds
+tap 85
+wait 2000
+leds
+state playing
+shot 03b-playing
+note 20 100             # hold step 5 while playing: velocity down, ratchet up
+wait 300
+shot 03c-held
+note 0 127
+cc 71 100
+cc 71 100
+wait 80
+shot 03d-vel
+note 0 0
+note 3 127
+cc 74 8
+wait 80
+shot 03e-ratchet
+note 3 0
+note 20 0
+wait 800
+state edited
+shot 03f-after-edit
+note 16 100             # tap step 1 while playing: remove
+wait 60
+note 16 0
+wait 100
+state removed
+cc 56 127
+cc 56 0
+wait 400
+state undo1
+shot 03g-undo
+cc 49 127               # redo
+cc 56 127
+cc 56 0
+cc 49 0
+wait 400
+state redo
+cc 56 127
+cc 56 0
+wait 1300
+cc 63 127               # Right: page 2
+cc 63 0
+wait 100
+shot 03h-page2
+state page2
+note 16 100             # a step on page 2
+wait 60
+note 16 0
+wait 100
+state page2-step
+wait 3000
+state loop-length
+cc 62 127
+cc 62 0
+wait 900
+tap 85

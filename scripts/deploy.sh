@@ -4,7 +4,8 @@
 # back), every file goes up under a temporary name and is moved into place (never written over a file in use).
 #   scripts/deploy.sh            copy only
 #   scripts/deploy.sh --launch   .. and start it (Move's own software stops until you leave it)
-#   scripts/deploy.sh --test     .. started with the test hook on (scripts/unit.sh)
+#   scripts/deploy.sh --test [PERCENT]   .. started with the test hook on (scripts/unit.sh). A test is SILENT unless
+#                                PERCENT (1..100) of the output is asked for: the speaker is loud; keep it at 10 or less
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${MOVE:-ableton@move.local}"
@@ -19,7 +20,9 @@ done
 $SSH "$HOST" "chmod 755 $DEST/evilgenius-host $DEST/evilgenius-heal $DEST/standalone; rm -f /dev/shm/egm-test"
 echo "deploy: copied to $HOST:$DEST"
 MODE="${1:-}"
-[[ "$MODE" == --test ]] && $SSH "$HOST" ": >/dev/shm/egm-test"
+VOL="${2:-0}"
+[[ "$VOL" =~ ^[0-9]+$ ]] || { echo "ERROR: the test volume is a percent, 0..100" >&2; exit 1; }
+[[ "$MODE" == --test ]] && $SSH "$HOST" "echo $VOL >/dev/shm/egm-test"
 if [[ "$MODE" == --test || "$MODE" == --launch ]]; then
     $SSH "$HOST" "/data/UserData/schwung/launch-standalone.sh $DEST/standalone; sleep 9; cat /data/UserData/schwung/evilgenius-host.log; pidof evilgenius-host >/dev/null && echo 'deploy: running' || echo 'deploy: NOT running'"
 fi

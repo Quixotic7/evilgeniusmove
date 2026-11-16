@@ -44,7 +44,7 @@ for f in glob.glob(os.path.join(sys.argv[1], '*.bin')):
             out.append(255 if (d[(y // S // 8) * 128 + x // S] >> ((y // S) & 7)) & 1 else 0)
     open(f[:-4] + '.pgm', 'wb').write(b'P5\n%d %d\n255\n' % (128 * S, 64 * S) + bytes(out))
 PY
-    python3 "$DIR/scripts/sheet.py" "$OUT" "$OUT/sheet.png" 4
+    if ls "$OUT"/*.pgm >/dev/null 2>&1; then python3 "$DIR/scripts/sheet.py" "$OUT" "$OUT/sheet.png" 4; fi
     ;;
 *) echo "usage: unit.sh run SCRIPT [OUT_DIR] | state | log" >&2; exit 2 ;;
 esac

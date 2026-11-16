@@ -150,7 +150,7 @@ void scr_knob(mono_t *m, const char *name, const char *value, int frac)
     mono_clear(m);
     mono_text(m, 4, 3, name, MONO_FB, 1, 1);
     if (value && *value) {
-        const int sc = mono_text_w(value, MONO_FB, 3) <= 120 ? 3 : 2;
+        const int sc = mono_text_w(value, MONO_FB, 3) <= 120 ? 3 : mono_text_w(value, MONO_FB, 2) <= 124 ? 2 : 1;
         mono_text(m, 4, 19 + (3 - sc) * 4, value, MONO_FB, sc, 1);
     }
     if (frac >= 0) {

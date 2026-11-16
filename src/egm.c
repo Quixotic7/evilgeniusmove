@@ -36,7 +36,8 @@
 #include "mono.h"
 #include "screens.h"
 
-void qd_view_edit(qd_app_t *a, ui_held_t *h, ui_lane_t *l);    /* view.c: the EDIT view's records (the room's lane) */
+void qd_view_edit(qd_app_t *a, ui_held_t *h, ui_lane_t *l);
+void qd_view_browse(const qd_app_t *a, ui_browse_t *v);        /* .. the preset browser's */    /* view.c: the EDIT view's records (the room's lane) */
 
 /* ------------------------------------------------------------------ the Move's surface (schwung docs/API.md) --- */
 enum { N_KNOB_TOUCH0 = 0, N_VOL_TOUCH = 8, N_JOG_TOUCH = 9, N_STEP0 = 16, N_PAD0 = 68 };
@@ -50,7 +51,7 @@ enum { C_OFF = 0, C_GREY = 119, C_LGREY = 118, C_WHITE = 120, C_DKBLUE = 97, C_B
 /* the FM-1's buttons by their printed names, in the core's QD_B_* order (app.h) */
 enum { B_FX, B_SEL, B_ENV, B_LFO, B_EDIT, B_GLO, B_HOME, B_SAVE, B_ARP, B_SEQ, B_PLAY, B_REC, B_OCTDN, B_OCTUP };
 
-enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_CORE };
+enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_BROWSE, MV_CORE };
 enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER };  /* a page of the Move's own over whatever is up */
 
 /* Shift + a step button: the Move's own shortcuts, by the icons printed under the steps (0: none there) */
@@ -234,6 +235,14 @@ static void knob_info(int i, kinfo_t *o)
 {
     memset(o, 0, sizeof *o);
     o->frac = -1;
+    if (i == 8 && S.mode == MV_HOME && A.ui.nheld) {    /* the wheel with Shift, a step held: the step's own sound */
+        qd_rstep_t r;
+        qd_step_resolve(qd_ctl_cpat(&A), A.sel, A.ui.held[0], &r);
+        snprintf(o->name, sizeof o->name, "STEP SOUND");
+        snprintf(o->val, sizeof o->val, "%s", r.sound ? qd_sound_name(&A.proj, r.sound) : "TRACK'S");
+        o->ok = 1;
+        return;
+    }
     if (i < 0 || i > 7)
         return;
     if (S.mode == MV_SOUND) {
@@ -381,14 +390,6 @@ static void snd_group(int g)
 /* ------------------------------------------------------------------ input --- */
 static void btn(int b, int down) { qd_app_button(&A, b, down); }
 static void tap(int b) { btn(b, 1); btn(b, 0); }
-static void key_tap(int key) { qd_app_key(&A, key, 1, STEP_VEL); qd_app_key(&A, key, 0, 0); }
-
-/* something of the core's that must not see SHIFT, while Shift is down here: it is let go there for the call */
-static void unshift(int on)
-{
-    if (S.shift)
-        btn(B_GLO, on ? 0 : 1);
-}
 
 static int detents(int acc_i, int delta, int div)
 {
@@ -434,9 +435,7 @@ static void knob(int i, int delta)
     } else if (S.mode == MV_HOME) {                     /* the core's hold mode put on this knob's for the turn */
         const int keep = A.ui.hmode, second = S.shift && i >= 1 && i <= 5;
         A.ui.hmode = S.shift && i == 7 ? UI_F_FUNC : HOME_MODE[i];
-        unshift(1);
         qd_app_knob(&A, second ? QD_K_2 : QD_K_1, d);
-        unshift(0);
         A.ui.hmode = keep;
     } else {
         static const int K[8] = { QD_K_1, QD_K_2, QD_K_3, QD_K_4, QD_K_ALGO, QD_K_PRESETS, -1, -1 };
@@ -457,10 +456,15 @@ static void wheel(int delta)
     } else if (S.over == OV_TEMPO) {
         const int bpm = qd_seq_bpm(&A.seq) + d;
         qd_ctl_set_tempo(&A, bpm < 30 ? 30 : bpm > 300 ? 300 : bpm);
-    } else if (S.shift && S.mode != MV_CORE) {          /* Shift: the track's sound */
-        unshift(1);
-        qd_app_knob(&A, QD_K_PRESETS, d);
-        unshift(0);
+    } else if (S.mode == MV_BROWSE) {                   /* the sounds: each one heard on the track as it comes up */
+        qd_br_turn(&A, d);
+    } else if (S.shift && S.mode != MV_CORE) {
+        if (A.ui.nheld) {                               /* Shift, a step held: that step's own sound (a lock) */
+            qd_app_knob(&A, QD_K_PRESETS, d);
+            S.last_knob = 8;
+            S.turn_ms = S.now ? S.now : 1;
+        } else
+            qd_br_turn(&A, 0);                          /* Shift: the track's sound: the browser opens where it is */
     } else if (S.mode == MV_SOUND) {
         snd_go(S.spage + d < 0 ? 0 : S.spage + d >= NSND ? NSND - 1 : S.spage + d);
     } else if (S.mode == MV_FX) {
@@ -503,7 +507,10 @@ static void wheel_click(int down)
             S.quit = 2;
         return;
     }
-    if (S.mode == MV_CORE)                              /* the core's own menus: yes / enter (its OCT+) */
+    if (S.mode == MV_BROWSE) {                          /* the sound shown: taken */
+        if (down)
+            qd_br_load(&A);
+    } else if (S.mode == MV_CORE)                       /* the core's own menus: yes / enter (its OCT+) */
         btn(B_OCTUP, down);
 }
 
@@ -513,10 +520,10 @@ static void shift_step(int i)
     switch (SHIFT_STEP[i]) {
     case SS_SETUP: S.over = S.over == OV_SETUP ? OV_NONE : OV_SETUP; S.menu_sel = 0; break;
     case SS_TEMPO: S.over = S.over == OV_TEMPO ? OV_NONE : OV_TEMPO; break;
-    case SS_METRO: key_tap(QD_BLACK_KEY[6]); break;     /* the core's SHIFT + B7 (Shift is down there too) */
-    case SS_DOUBLE: key_tap(QD_BLACK_KEY[8]); break;    /* SHIFT + B9 */
-    case SS_PROJECTS: tap(B_SAVE); break;               /* SHIFT + SAVE */
-    case SS_MIDIFX: tap(B_ARP); break;                  /* SHIFT + ARP */
+    case SS_METRO: qd_shift_black(&A, 6); break;        /* (the core's SHIFT + B7, by name) */
+    case SS_DOUBLE: qd_shift_black(&A, 8); break;       /* (SHIFT + B9) */
+    case SS_PROJECTS: qd_prj_button(&A); break;         /* (SHIFT + SAVE) */
+    case SS_MIDIFX: tap(B_ARP); break;                  /* the MIDI FX page (the core's ARP, tapped) */
     default: break;
     }
 }
@@ -577,9 +584,7 @@ static void page_pad(int col, int down, int vel)
             qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
     } else if (S.mode == MV_SOUND) {
         if (down && S.shift) {                          /* Shift: the dice, this group's page shaken */
-            unshift(1);
             qd_snd_randomise(&A, g_snd_core[S.spage][0]);
-            unshift(0);
             show_name("SHAKEN");
         } else if (down)
             snd_group(col);
@@ -608,9 +613,11 @@ static void surface_note(int note, int vel)
     }
     if (note >= N_STEP0 && note < N_STEP0 + 16) {
         const int i = note - N_STEP0;
-        if (down && S.shift) {
+        if (down && (S.shift || S.mode == MV_BROWSE)) {     /* (in the sounds the steps do nothing: no slot picked
+                                                         * by a stray finger) */
             step_eaten |= (uint16_t)(1u << i);
-            shift_step(i);
+            if (S.shift)
+                shift_step(i);
         } else if (!down && (step_eaten >> i & 1u)) {
             step_eaten &= (uint16_t)~(1u << i);
         } else
@@ -643,7 +650,9 @@ static void surface_cc(int cc, int v)
         qd_app_master(&A, S.pot);
         break;
     case CC_JOG_CLICK: wheel_click(down); break;
-    case CC_SHIFT: S.shift = down; btn(B_GLO, down); break;
+    case CC_SHIFT: S.shift = down; break;               /* the Move's own modifier: the core never sees a SHIFT (its SHIFT
+                                                         * sticks on a quick press, and means other things on its pages);
+                                                         * what Shift does here calls the core's functions by name */
     case CC_MENU:
         if (S.over) { if (down) S.over = OV_NONE; }
         else btn(B_HOME, down);
@@ -656,8 +665,14 @@ static void surface_cc(int cc, int v)
                 sent = -1;
                 break;
             }
-            sent = S.mode == MV_SOUND || S.mode == MV_FX || S.mode == MV_MIX || S.scr == QD_SCR_MFX ||
-                   S.scr == QD_SCR_TOOLS || S.scr == QD_SCR_GEEK || S.scr == QD_SCR_OV ? B_HOME : B_OCTDN;
+            if (S.mode == MV_BROWSE) {                  /* out of the sounds: the track's own sound back */
+                qd_br_cancel(&A);
+                sent = -1;
+                break;
+            }
+            /* out of whatever page is open: the core's HOME, which closes any of them. A settings menu steps back
+             * a level first (its OCT-). At home there is nothing to go back from */
+            sent = QD_LATCH_MENU(A.ui.latch) ? B_OCTDN : S.mode == MV_HOME || S.mode == MV_IDLE ? -1 : B_HOME;
         }
         if (sent >= 0)
             btn(sent, down);
@@ -674,7 +689,8 @@ static void surface_cc(int cc, int v)
         break;
     case CC_SAMPLE:                                     /* the sound editor. Shift: SAVE PRESET */
         if (S.shift) {
-            if (down) { unshift(1); tap(B_SAVE); unshift(0); }
+            if (down)
+                tap(B_SAVE);
         } else
             btn(B_EDIT, down);
         break;
@@ -690,13 +706,15 @@ static void surface_cc(int cc, int v)
         break;
     case CC_LOOP: S.loop_down = down; btn(B_SEQ, down); break;   /* held: the steps choose the pattern */
     case CC_COPY:                                       /* the pattern copied; Shift: pasted (SHIFT + B4 / B5) */
-        if (down) {
-            if (!S.shift) btn(B_GLO, 1);
-            key_tap(QD_BLACK_KEY[S.shift ? 4 : 3]);
-            if (!S.shift) btn(B_GLO, 0);
-        }
+        if (down)
+            qd_shift_black(&A, S.shift ? 4 : 3);
         break;
-    case CC_DELETE: qd_app_key(&A, QD_BLACK_KEY[10], down, STEP_VEL); break;   /* B11: clear (Shift: the track) */
+    case CC_DELETE:                                     /* the core's B11: clear. Shift: the track (pressed twice) */
+        if (!S.shift)
+            qd_app_key(&A, QD_BLACK_KEY[10], down, STEP_VEL);
+        else if (down)
+            qd_shift_black(&A, 10);
+        break;
     case CC_PLAY: btn(B_PLAY, down); break;
     case CC_REC:                                        /* armed: the pads' notes are recorded (stopped: a capture
                                                          * that starts with the first note); again: off */
@@ -728,11 +746,8 @@ static void surface_cc(int cc, int v)
         }
         break;
     case CC_UNDO:                                       /* SHIFT + F1 undo, SHIFT + F2 redo */
-        if (down) {
-            if (!S.shift) btn(B_GLO, 1);
-            tap(S.shift ? B_OCTUP : B_OCTDN);
-            if (!S.shift) btn(B_GLO, 0);
-        }
+        if (down)
+            qd_shift_undo(&A, S.shift ? 1 : -1);
         break;
     default:
         if (cc >= CC_TRACK4 && cc <= CC_TRACK1 && down) {   /* Shift: tracks 5 and 6 on the first two */
@@ -806,6 +821,8 @@ static int mode_now(void)
         return qd_msnd_is(A.model.t[A.sel].patch) ? MV_CORE : MV_SOUND;   /* (a MIDI track's editor: the core's) */
     if (u->latch == QD_LATCH_FX)
         return MV_FX;
+    if (u->latch == QD_LATCH_BROWSE)
+        return MV_BROWSE;
     if (u->latch == QD_LATCH_MIX)
         return MV_MIX;
     return u->latch == QD_LATCH_NONE ? MV_HOME : MV_CORE;
@@ -830,6 +847,7 @@ static const char *screen_name(int scr)                 /* the core's own pages'
 static void sync(void)
 {
     const int m = mode_now(), scr = qd_view_screen(&A);
+    A.ui.shift_stick = 0;                               /* (no SHIFT of the core's is ever left on) */
     A.ui.ekeys = 0;                                     /* the step buttons are always the steps here: the pads are the keys */
     if (m != S.mode) {
         S.mode = m;
@@ -883,7 +901,9 @@ static void leds(void)
     int i;
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
-        if (S.shift)                                    /* Shift: the steps that are shortcuts, the open one bright */
+        if (S.mode == MV_BROWSE)
+            led_note(N_STEP0 + i, C_OFF);
+        else if (S.shift)                               /* Shift: the steps that are shortcuts, the open one bright */
             led_note(N_STEP0 + i, (uint8_t)(!SHIFT_STEP[i] ? C_OFF
                                             : (SHIFT_STEP[i] == SS_SETUP && S.over == OV_SETUP) ||
                                               (SHIFT_STEP[i] == SS_TEMPO && S.over == OV_TEMPO) ? C_WHITE : C_LTBLUE));
@@ -906,7 +926,7 @@ static void leds(void)
             c = shade(L.key[QD_BLACK_KEY[i]], C_DKBLUE, C_BLUE, C_LTBLUE);
         led_note(N_PAD0 + 24 + i, c);
     }
-    led_cc(CC_SHIFT, white(L.button[B_GLO]));
+    led_cc(CC_SHIFT, (uint8_t)(S.shift ? 124 : 16));
     led_cc(CC_MENU, white(L.button[B_HOME]));
     led_cc(CC_BACK, (uint8_t)(S.over || (S.mode != MV_HOME && S.mode != MV_IDLE) ? 64 : 6));
     led_cc(CC_CAPTURE, (uint8_t)(S.mode == MV_FX ? 124 : 16));
@@ -917,8 +937,11 @@ static void leds(void)
     led_cc(CC_COPY, 16);
     led_cc(CC_DELETE, white(L.key[QD_BLACK_KEY[10]]));
     led_cc(CC_UNDO, 16);
-    led_cc(CC_LEFT, 16);
-    led_cc(CC_RIGHT, 16);
+    {   /* Left / Right: bright on the side the playhead is, when it plays a page other than the one shown */
+        const int pp = qd_ctl_playing_page(&A, A.sel), pg = A.ui.page[A.sel];
+        led_cc(CC_LEFT, (uint8_t)(pp >= 0 && pp < pg ? 124 : 16));
+        led_cc(CC_RIGHT, (uint8_t)(pp >= 0 && pp > pg ? 124 : 16));
+    }
     led_cc(CC_PLAY, L.play_green ? C_GREEN : shade(L.button[B_PLAY], C_GREY, C_LGREY, C_WHITE));
     led_cc(CC_REC, A.ui.rec ? C_RED : C_OFF);
     led_cc(CC_SAMPLE, (uint8_t)(S.mode == MV_SOUND ? C_WHITE : C_GREY));
@@ -961,6 +984,8 @@ void egm_init(const char *flash_path)
             g_snd_core[i][j] = (int8_t)snd_page_index(SND[i].e[j].page);
     qd_app_init(&A);
     qd_persist_attach(&A, flash_open(flash_path));
+    A.ui.follow = 0;                                    /* the step buttons stay on the page you chose (the core follows
+                                                         * the playhead by default: a step under a finger would change) */
     qd_app_master(&A, S.pot);
     qd_app_tick(&A, 0);
 }
@@ -1160,6 +1185,13 @@ static void page_draw(mono_t *m, uint32_t now_ms)
             val[i] = ki.ok ? ki.frac : -1;
         }
         scr_fx(m, KIND[S.fpage], val, now_ms);
+    } else if (S.mode == MV_BROWSE) {                   /* the sound that would be taken, its place in the list */
+        ui_browse_t v;
+        char head[17];
+        memset(&v, 0, sizeof v);
+        qd_view_browse(&A, &v);
+        snprintf(head, sizeof head, "%s %d/%d", v.title && !strcmp(v.title, "PRESETS") ? "SOUND" : v.title ? v.title : "", v.pos, v.n);
+        scr_knob(m, head, v.e[2].ok && v.e[2].name ? v.e[2].name : "NONE", v.n > 1 ? (v.pos - 1) * 1000 / (v.n - 1) : -1);
     } else if (mix_native()) {
         ui_mix_t v;
         int level[6], mute[6], meter[6], i;
@@ -1290,6 +1322,22 @@ void egm_describe(char *out, int cap)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), " steps=%d", n);
         }
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " trigs=%04x noted=%04x lo=%d span=%d", on, noted, l.lo, l.span);
+        {   /* for a QA pass: every track's steps, the selected track's sound, key and loop, what the core is showing */
+            const qd_pattern_t *P = qd_ctl_cpat(&A);
+            int t, sc, rt;
+            qd_track_key(&A.proj, P, A.sel, &sc, &rt);
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " sound=\"%s\" scale=%s root=%d len=%d latch=%d view=%d dirty=%d all=",
+                     A.model.t[A.sel].name, qd_scale_short(sc), rt, qd_track_len(&P->trk[A.sel]), A.ui.latch, A.ui.view,
+                     qd_persist_dirty(&A));
+            for (t = 0; t < QD_TRACKS; t++) {
+                int n = 0;
+                for (i = 0; i < QD_NSTEP; i++)
+                    n += qd_step_is_on(qd_step(P, t, i)) != 0;
+                snprintf(out + strlen(out), (size_t)cap - strlen(out), t ? ",%d" : "%d", n);
+            }
+            if (A.ui.cf_on && A.ui.cf_big)
+                snprintf(out + strlen(out), (size_t)cap - strlen(out), " says=\"%s\"", A.ui.cf_big);
+        }
     }
 }
 

@@ -1,0 +1,96 @@
+# QA 7: effects and the mix
+tap 85
+wait 400
+note 93 100             # track 2, a note on step 1 so there is something to hear
+note 93 0
+note 16 100
+wait 300
+note 68 100
+wait 60
+note 68 0
+note 16 0
+tap 85
+wait 1200
+leds
+tap 52                  # Capture: FX (chorus)
+wait 900
+state fx
+note 3 127              # knob 4: SEND
+cc 74 60
+cc 74 60
+wait 80
+shot 07a-send
+note 3 0
+wait 900
+shot 07b-chorus
+note 94 100             # echo
+note 94 0
+wait 1300
+cc 74 60                # its send
+cc 74 60
+cc 72 30                # spread
+wait 900
+shot 07c-echo
+note 9 127
+wait 80
+shot 07d-echo-eight
+note 9 0
+wait 2000
+leds
+note 92 100             # sends floor
+note 92 0
+wait 1300
+shot 07e-sends
+note 9 127
+wait 80
+shot 07f-sends-eight
+note 9 0
+cc 43 127               # track button 1 inside FX: does the send picture follow the track?
+cc 43 0
+wait 200
+state fx-track1
+tap 88                  # Mute tapped: mix
+wait 900
+state mix
+shot 07g-mix
+cc 72 124               # track 2 fader down
+cc 72 124
+cc 72 124
+cc 72 124
+cc 72 124
+wait 80
+shot 07h-fader
+wait 900
+leds
+wait 1500
+leds
+tap 88                  # again: sends page
+wait 900
+shot 07i-mix-sends
+state mix2
+tap 88
+wait 900
+shot 07j-mix-fxmix
+tap 88
+wait 900
+state mix-wrap
+tap 51
+wait 300
+state home
+cc 88 127               # hold Mute + Track button 2
+cc 42 127
+cc 42 0
+cc 88 0
+wait 200
+state muted-by-button
+cc 49 127               # hold Shift + Mute + track 3: solo
+wait 400
+cc 88 127
+note 94 100
+note 94 0
+cc 88 0
+cc 49 0
+wait 300
+state solo
+shot 07k-solo-room
+tap 85

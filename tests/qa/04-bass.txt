@@ -1,0 +1,78 @@
+# QA 4: a bass line on track 2: select, audition, record live, record stopped, octave, scale
+tap 85
+wait 400
+note 93 100             # top pad 2: track 2
+wait 40
+note 93 0
+wait 100
+state track2
+leds
+note 68 100
+wait 250
+note 68 0
+wait 100
+leds
+state audition
+cc 49 127               # Shift + minus: pads down an octave
+tap 54
+cc 49 0
+note 68 100
+wait 250
+note 68 0
+wait 100
+leds
+shot 04a-after-octave
+state octave-down
+tap 86                  # Record while stopped: capture waits for the first note
+wait 150
+shot 04b-rec-stopped
+state rec-stopped
+note 68 100             # play four notes about a beat apart (124 bpm: 484 ms)
+wait 200
+note 68 0
+wait 284
+note 71 100
+wait 200
+note 71 0
+wait 284
+note 70 100
+wait 200
+note 70 0
+wait 284
+note 73 100
+wait 200
+note 73 0
+wait 800
+state rec-running
+shot 04c-rec-running
+tap 86                  # Record off
+wait 300
+state rec-off
+shot 04d-rec-off
+wait 2500
+leds
+state loop-playing
+shot 04e-bass-room
+tap 85
+wait 300
+tap 86                  # Record + playing: live overdub
+tap 85
+wait 600
+state rec-then-play
+note 75 100
+wait 150
+note 75 0
+wait 1500
+tap 86
+wait 200
+state overdub
+tap 85
+wait 200
+cc 55 127               # the + button alone at home
+cc 55 0
+wait 200
+shot 04f-plus-button
+state plus
+cc 54 127
+cc 54 0
+wait 1300

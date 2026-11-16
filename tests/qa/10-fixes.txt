@@ -1,0 +1,111 @@
+# the three blockers of the 16 November QA pass, tried again
+tap 85
+wait 400
+cc 49 127               # a QUICK Shift + wheel: the sounds
+cc 14 1
+cc 49 0
+wait 200
+shot 10a-browser
+state browser-open
+cc 14 1                 # the wheel alone now: the next sounds
+cc 14 1
+cc 14 1
+wait 200
+shot 10b-browsed
+state browsed
+note 16 100             # a stray step: nothing
+wait 60
+note 16 0
+note 68 100             # a pad: heard with the sound shown
+wait 200
+note 68 0
+wait 100
+state stray-step
+tap 3                   # click: taken
+wait 300
+state taken
+shot 10c-taken
+cc 49 127
+cc 14 1
+cc 49 0
+wait 100
+cc 14 1
+cc 14 1
+wait 100
+tap 51                  # Back: the track's own sound again
+wait 300
+state cancelled
+note 16 100             # steps work again
+wait 60
+note 16 0
+note 20 100
+wait 60
+note 20 0
+wait 100
+state two-steps
+note 20 100             # step 5 held, Shift + wheel: its own sound
+wait 300
+cc 49 127
+cc 14 1
+cc 14 1
+wait 100
+shot 10d-step-sound
+cc 49 0
+note 20 0
+wait 900
+state step-sound
+cc 49 127               # quick Shift + minus: the pads an octave down; the screen must stay the room
+tap 54
+cc 49 0
+wait 300
+shot 10e-after-shift
+state after-shift
+cc 49 127               # quick Shift + Sampling: SAVE PRESET, not the projects
+tap 118
+cc 49 0
+wait 900
+shot 10f-save
+state save
+tap 51
+wait 300
+tap 85                  # play: the page shown stays page 1 through both pages
+wait 2300
+state bar2
+shot 10g-bar2
+wait 2000
+state bar3
+note 20 100             # step 5 is still my step 5
+wait 300
+shot 10h-step5
+note 20 0
+state held5
+cc 60 127               # copy, paste, undo, redo, metronome, double: all without the core's Shift
+cc 60 0
+wait 300
+state copy
+cc 56 127
+cc 56 0
+wait 300
+state undo
+cc 49 127
+wait 300
+note 21 100
+wait 40
+note 21 0
+wait 300
+state metro
+note 29 100
+wait 40
+note 29 0
+wait 300
+state double
+note 26 100
+wait 40
+note 26 0
+cc 49 0
+wait 900
+shot 10i-midifx
+state midifx
+tap 51
+wait 300
+state end

@@ -1,0 +1,47 @@
+# QA 1: a Move player's first minute. What do I see, can I start, where am I?
+shot 01a-boot
+note 70 100             # I press a pad at the title: anything?
+wait 100
+note 70 0
+wait 200
+state pad-at-title
+shot 01b-after-pad
+tap 85                  # Play
+wait 400
+state after-play-1
+shot 01c-after-play
+tap 85
+wait 1200
+state after-play-2
+shot 01d-playing
+tap 85                  # stop
+wait 300
+state stopped
+cc 14 1                 # the wheel at home: what does it do?
+wait 100
+shot 01e-wheel
+state wheel
+cc 14 127
+wait 800
+tap 50                  # Menu at home
+wait 300
+shot 01f-menu
+state menu1
+tap 50
+wait 300
+shot 01g-menu2
+state menu2
+tap 50
+wait 300
+state menu3
+shot 01h-menu3
+tap 50
+wait 300
+state menu4
+tap 50
+wait 300
+state menu5
+tap 51                  # Back
+wait 300
+state back
+shot 01i-back

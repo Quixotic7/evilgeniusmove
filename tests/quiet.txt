@@ -1,0 +1,11 @@
+# a silent run: vol=0 in the state, and peak above 0 while it plays
+tap 85
+wait 400
+tap 85
+wait 3000
+state playing
+wait 1000
+state playing2
+tap 85
+wait 500
+state stopped

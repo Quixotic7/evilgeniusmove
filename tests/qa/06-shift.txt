@@ -1,0 +1,104 @@
+# QA 6: the Shift functions with Shift held a realistic half second
+tap 85
+wait 400
+cc 49 127
+wait 500
+cc 14 1                 # Shift + wheel: the sound
+wait 300
+shot 06a-shift-wheel
+state shift-wheel
+cc 14 1
+wait 300
+state shift-wheel-2
+cc 49 0
+wait 300
+shot 06b-released
+state released
+tap 51
+wait 300
+state back
+cc 49 127
+wait 500
+tap 118                 # Shift + Sampling: save the sound
+wait 300
+cc 49 0
+wait 300
+shot 06c-save
+state save
+tap 51
+wait 300
+cc 49 127
+wait 500
+note 17 100             # Shift + step 2: setup
+wait 40
+note 17 0
+wait 100
+cc 49 0
+wait 200
+shot 06d-setup
+state setup
+tap 3                   # SETTINGS
+wait 900
+shot 06e-settings
+state settings
+cc 14 1
+wait 200
+shot 06f-settings-wheel
+cc 71 4
+wait 200
+shot 06g-settings-knob
+tap 51
+wait 300
+state settings-back
+shot 06h-after-back
+tap 50
+wait 300
+state settings-menu
+cc 49 127
+wait 500
+note 20 100             # tempo
+wait 40
+note 20 0
+cc 49 0
+cc 14 120
+wait 100
+shot 06i-tempo
+state tempo
+tap 51
+cc 49 127
+wait 500
+note 21 100             # metronome
+wait 40
+note 21 0
+wait 100
+cc 49 0
+wait 300
+shot 06j-metro
+state metro
+cc 49 127
+wait 500
+note 16 100             # projects
+wait 40
+note 16 0
+cc 49 0
+wait 400
+shot 06k-projects
+state projects
+cc 14 1
+wait 200
+shot 06l-projects-wheel
+tap 51
+wait 300
+state projects-back
+cc 49 127
+wait 500
+note 26 100             # MIDI FX
+wait 40
+note 26 0
+cc 49 0
+wait 900
+shot 06m-midifx
+state midifx
+tap 51
+wait 300
+state midifx-back

@@ -1,0 +1,91 @@
+# QA 5: shape a sound: oscillator, filter, envelope; audition while editing; save it
+tap 85
+wait 400
+note 93 100
+note 93 0
+wait 100
+tap 118                 # Sampling
+wait 900
+state sound-open
+leds
+note 68 100             # the pads still play here?
+wait 300
+note 68 0
+wait 100
+leds
+cc 71 4                 # wave
+cc 71 4
+wait 900
+shot 05a-osc
+note 68 100
+wait 300
+note 68 0
+leds
+note 95 100             # filter group
+note 95 0
+wait 900
+shot 05b-filter-off
+cc 75 4                 # knob 5 = F ENV attack ... where is the filter's mode?
+wait 100
+shot 05c-knob5
+wait 900
+note 9 127              # wheel touched: all eight
+wait 80
+shot 05d-all-eight-filter
+note 9 0
+note 95 100             # filter group again: CHIP page (holds the mode on knob 4)
+note 95 0
+wait 900
+note 9 127
+wait 80
+shot 05e-all-eight-chip
+note 9 0
+cc 74 4                 # knob 4: filter mode
+wait 80
+shot 05f-mode
+wait 900
+note 95 100
+note 95 0
+wait 900
+cc 71 124               # cutoff down
+cc 71 124
+cc 71 124
+cc 71 124
+wait 900
+shot 05g-filter-lp
+note 68 100
+wait 300
+note 68 0
+leds
+note 94 100             # envelopes
+note 94 0
+wait 900
+cc 71 8
+cc 74 12
+wait 900
+shot 05h-env
+note 16 100             # hold step 1 and turn a sound knob: a lock?
+wait 300
+cc 72 8
+wait 100
+shot 05i-lock-popup
+note 16 0
+wait 900
+state locked-step
+cc 49 127               # Shift + Sampling: save the sound
+tap 118
+cc 49 0
+wait 300
+shot 05j-save
+state save
+tap 3                   # wheel click: confirm?
+wait 300
+shot 05k-save-click
+state save-click
+tap 51
+wait 300
+state save-back
+shot 05l-after-back
+tap 51
+wait 300
+state end

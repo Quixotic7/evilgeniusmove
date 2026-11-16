@@ -35,13 +35,26 @@ scripts/deploy.sh --launch   # copy to ableton@move.local and start it
 ### Checking a unit with nobody at it
 
 ```bash
-scripts/deploy.sh --test                 # start it with the test hook on
+scripts/deploy.sh --test                 # start it with the test hook on, SILENT
+scripts/deploy.sh --test 5               # .. or at 5% of the output
 scripts/unit.sh run tests/pages.txt      # play a simulator script on the unit; its real screens into build/unit
 scripts/unit.sh state                    # the app's state as one line
 ```
 
 The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The same scripts run in the simulator:
 `build/sim/egm-sim tests/pages.txt build/shots`.
+
+### Rules for testing on a unit
+
+1. **A test is quiet.** The Move's speaker is loud. Every unattended run starts with `scripts/deploy.sh --test`,
+   which is silent. Ask for sound only when someone will listen, and then at 10% or less (`--test 5`).
+   Never use `--launch` for a scripted run: that plays at full level.
+2. **Check sound by number, not by ear.** The state line carries `vol=` (the percent in force) and `peak=` (the
+   loudest sample since the last state, measured before the volume is applied; 32767 is full scale). A silent run
+   with `peak=0` while a pattern plays is a failure.
+3. **Read `late=`** after any run with playback: it must stay 0.
+4. **Leave Move running.** When the run ends, stop EvilGenius so Move's own software comes back, and say what the
+   run changed in the project on the unit.
 
 ## Controls
 
@@ -52,7 +65,8 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Top pad row | at home the six tracks; in SOUND the 8 sound groups; in FX the floors (pad 8 steps through the last two) |
 | Lower three pad rows | notes in the track's scale; a row up is a fourth up (Shift + - / +: octave) |
 | Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value |
-| Wheel | next / previous page (SOUND, FX), track (MIX), the core's SELECT elsewhere; Shift: the track's sound |
+| Wheel | next / previous page (SOUND, FX), track (MIX), the page of steps at home |
+| Shift + wheel | the sounds: turn to hear each on the track, click to take it, Back to keep your own. With a step held: that step's own sound |
 | Wheel touched | all eight values at once |
 | Wheel click | choose in the setup menu; yes / enter in the core's own menus |
 | Volume | master |
@@ -62,13 +76,13 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Shift + Sampling / Shift + Capture | save the sound / MIDI FX |
 | Shift + a top pad, in SOUND | shake the page's values (the dice) |
 | Power button | a menu: CANCEL / POWEROFF |
-| Menu / Back | home (again: the next home view) / back |
+| Menu / Back | home (again: the next home view) / out of whatever page is open |
 | Record | arm recording from the pads (stopped: starts with the first note); again: off |
 | Loop | held: the step buttons choose the pattern, top pads 1-4 the bank. Tapped: the core's TOOLS |
 | Copy (Shift: paste) | the pattern |
 | Delete | the core's B11: clear |
 | - / + | the core's F1 / F2 layers |
-| Left / Right | the previous / next page of 16 steps |
+| Left / Right | the previous / next page of 16 steps. The page shown stays put while it plays; the side the playhead is on lights |
 | Undo (Shift: redo) | undo |
 | Shift + volume touch + wheel click | leave, back to Move (also in the setup menu) |
 
