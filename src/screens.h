@@ -75,7 +75,7 @@ void scr_groove(mono_t *m, int swing, const int *on, int n);
 /* PROJECTS: the open project (num of n), its name, its colour (0 none), the projects used */
 void scr_projects(mono_t *m, int num, int n, const char *name, int colour, int used);
 /* Session's page belt: the pages as boxes on a belt, the chosen one large, its name under it */
-void scr_belt(mono_t *m, const char *const *names, int n, int sel, int from, int t);   /* (t 0..1000 moving from from;
+void scr_belt(mono_t *m, int seq, const char *const *names, int n, int sel, int from, int t);   /* (seq: Sequence's icons) */   /* (t 0..1000 moving from from;
                                                          * < 0 or 1000: settled) */
 /* Session's ARRANGE: eight positions from first, each its scene (0: END) and repeats, the playing one filled */
 void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, int prog);

@@ -1,0 +1,29 @@
+# TRIG / SOUND's pad 1: the TRIG page first (the step's eight values, as at home), then VOICING, AMP
+tap 85                   # out of the title
+wait 300
+cc 42 127                # TRIG / SOUND; pad 1: TRIG
+cc 42 0
+wait 300
+note 92 100
+note 92 0
+wait 1500
+shot 01-trig
+cc 71 124                # knob 1: the track's velocity down; knob 2: its length
+cc 71 124
+cc 72 4
+wait 100
+shot 02-turned
+wait 1500
+shot 03-trig-after
+note 92 100              # pad 1 again: VOICING; again: AMP; again: TRIG
+note 92 0
+wait 100
+state voicing
+note 92 100
+note 92 0
+wait 100
+state amp
+note 92 100
+note 92 0
+wait 1500
+state trig-again

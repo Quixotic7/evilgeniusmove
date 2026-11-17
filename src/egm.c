@@ -100,7 +100,7 @@ static const char *const SQ_NAME[SQ_N] = { "TRACKS", "SOUND", "FX", "TOOLS" };
 enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_SCENES, SN_ARRANGE, SN_SEQ, SN_N };   /* (the four track buttons', then the
                                                          * belt's) */
 static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX", "SCENES", "ARRANGE", "SEQ" };
-#define NSLOT 16                       /* clip slots a track (A01..A16) */
+#define NSLOT 64                       /* clip slots a track: four banks of 16 (A01..D16), a slot a scene */
 #define LAUNCH_Q (A.proj.launch)       /* a clip launched or stopped: the project's launch quantize */
 /* the launch quantize as Shift + the wheel turns it in CLIPS: now (a 16th), a beat, 1, 2, 4, 8 bars, the clip's end */
 static const uint8_t LAUNCH_ORDER[] = { QD_LAUNCH_NOW, QD_LAUNCH_BEAT, QD_LAUNCH_BAR, QD_LAUNCH_BAR2, QD_LAUNCH_BAR4,
@@ -109,8 +109,9 @@ static const uint8_t TRK_COL[8] = { 1, 3, 7, 11, 16, 17, 22, 25 };   /* the trac
 static const uint8_t TRK_DIM[8] = { 65, 69, 77, 85, 95, 97, 107, 113 };   /* .. dim */
 /* TRIG / SOUND's page pads 1-6: the sound pages each cycles through (SND's indices), the first the default. Pads 7, 8:
  * RND PAGE and RND SOUND (held a second) */
+#define SP_TRIG 100                    /* (pad 1's first: the TRIG page, a step's eight values: not one of SND's) */
 static const int8_t SND_PAD[6][4] = {
-    { 0, 1, -1, -1 },                  /* TRIG: AMP (with CRUSH and PORT), VOICE */
+    { SP_TRIG, 1, 0, -1 },             /* TRIG: the step's values, VOICING, AMP (with CRUSH and PORT) */
     { 3, 4, 5, 2 },                    /* OSC 1, 2, 3, MOD */
     { 11, 12, 13, -1 },                /* SPEECH: WORD, SAY, DIGI */
     { 9, 10, -1, -1 },                 /* FILTER (with its envelope), CHIP */
@@ -244,7 +245,11 @@ static struct {
     /* Session (Menu): the track buttons are its four modes; CLIPS: the pads the clips, 8 tracks x 4 slots from srow,
      * the step buttons in pairs under each track (stop, mute) */
     int jog_touch;                     /* a finger on the wheel (whatever else is touched) */
-    int layout;                        /* the note pads: 0 in key, 1 chromatic, 2 drums (Shift + step 8) */
+    int cin_bars, cin_on, cin_play_up; /* SEQ > TIME: the count-in's bars (0 off), one running (recording armed, PLAY) */
+    int trig_pg;                       /* TRIG / SOUND: the TRIG page up (pad 1's first), the step's eight values */
+    int qbelt, qbelt_sel, qbelt_from;  /* Sequence's page belt: open, the page chosen, the page it moved from .. */
+    uint32_t qbelt_ms;                 /* .. when */
+    int layout;                        /* the note pads: 0 in key, 1 chromatic, 2 drums, 3 sound locks (Shift + step 8) */
     int vel_fixed;                     /* the pads' velocity fixed (Shift + step 10) */
     int q_amt, q_held, q_used;         /* QUANTIZE (Shift + step 16): its amount %, held, the wheel turned while held */
     unsigned mk_touch, mk_turned;      /* Mute held: the knobs touched (bit n), and turned since (their volume, no mute) */
@@ -259,6 +264,7 @@ static struct {
     uint32_t cl_tap_ms[32];            /* each clip pad's last tap (two: its track stopped) */
     int cl_take;                       /* Copy / Delete + a clip: the one taken (track * NSLOT + slot; -1 none) .. */
     int cl_cut;                        /* .. by Delete: cut (kept aside, pasted where tapped next) */
+    int sc_take, sc_cut;               /* Copy / Delete + a step in CLIPS: the scene taken (-1 none), cut */
     uint32_t left_ms;                  /* Left's last tap in CLIPS (two: back to the first slots) */
     int copy_used;                     /* Copy held and a clip tapped (released alone: the clip duplicated) */
     int mix_k;                         /* Session's MIX: what the knobs and the pad columns set (TS_*) */
@@ -523,7 +529,7 @@ static void knob_info(int i, kinfo_t *o)
     }
     if (i < 0 || i > 7)
         return;
-    if (S.mode == MV_SOUND) {
+    if (S.mode == MV_SOUND && !S.trig_pg) {
         const spage_t *sp = &SND[S.spage];
         ui_snd_t v;
         int k;
@@ -569,7 +575,7 @@ static void knob_info(int i, kinfo_t *o)
             o->frac = (pan + 64) * 1000 / 127;
         }
         o->ok = 1;
-    } else if (S.mode == MV_HOME) {
+    } else if (S.mode == MV_HOME || (S.mode == MV_SOUND && S.trig_pg)) {   /* (TRIG: the same eight) */
         static const char *const TRIG[4] = { "OFF", "NOTE", "LOCK", "TIE" };
         const qd_pattern_t *P = qd_ctl_cpat(&A);
         qd_rstep_t r;
@@ -643,8 +649,14 @@ static void fx_go(int fpage)
 
 static void snd_go(int spage)
 {
+    if (spage == SP_TRIG) {                             /* TRIG: the eight step values (as at home), the sound's page kept */
+        S.trig_pg = 1;
+        show_name("TRIG");
+        return;
+    }
     if (spage < 0 || spage >= NSND)
         return;
+    S.trig_pg = 0;
     S.spage = spage;
     A.ui.snd_page = g_snd_core[spage][0];
     show_name(SND[spage].name);
@@ -654,6 +666,8 @@ static void snd_go(int spage)
 static int snd_pad_of(int spage)
 {
     int p, j;
+    if (S.trig_pg)
+        spage = SP_TRIG;
     for (p = 0; p < 6; p++)
         for (j = 0; j < 4; j++)
             if (SND_PAD[p][j] == spage)
@@ -668,7 +682,8 @@ static void snd_pad(int p)
     while (n < 4 && SND_PAD[p][n] >= 0)
         n++;
     if (snd_pad_of(S.spage) == p) {
-        for (j = 0; j < n && SND_PAD[p][j] != S.spage; j++)
+        const int cur = S.trig_pg ? SP_TRIG : S.spage;
+        for (j = 0; j < n && SND_PAD[p][j] != cur; j++)
             ;
         j = (j + 1) % n;
     } else
@@ -861,6 +876,8 @@ static void track_button(int n, int down)
 
 /* ------------------------------------------------------------------ Session's clips --- */
 static qd_pattern_t g_cut;             /* Delete + a clip: the part cut (its track 0), until pasted */
+static qd_pattern_t g_scut;            /* Delete + a step in CLIPS: the scene cut (every track's part), until pasted */
+static qd_scene_t g_scut_set;
 
 static int clip_has(int slot, int t)   /* track t's part of pattern slot has a trig */
 {
@@ -1028,6 +1045,42 @@ static void clip_pad(int idx, int down)
         clip_stop(t);
         clip_say("EMPTY", slot + 1);
     }
+}
+
+/* CLIPS, Copy or Delete held: the steps are the 16 scenes. Copy + a step, then a step: the scene copied there (every
+ * track's part, its settings); Delete + a step: the scene cut, the next step tapped pastes it (the same step puts it
+ * back); let go first: deleted. Each an undo level */
+static void scene_take_step(int k)
+{
+    int t;
+    char v[24];
+    if (k < 0 || k >= QD_NSCENE)
+        return;
+    S.copy_used = 1;
+    if (S.sc_take < 0) {
+        S.sc_take = k;
+        S.sc_cut = S.delete_down;
+        if (S.sc_cut) {
+            g_scut = *qd_proj_cpat(&A.proj, k);
+            g_scut_set = A.proj.scene[k];
+            clip_undo_begin(k, QD_UK_CLEAR);
+            for (t = 0; t < QD_TRACKS; t++)
+                qd_track_clear(qd_proj_pat(&A.proj, k), t);
+            clip_undo_end();
+        }
+        snprintf(v, sizeof v, "%s SCENE %d", S.sc_cut ? "CUT" : "COPY", k + 1);
+        show_name(v);
+        return;
+    }
+    clip_undo_begin(k, QD_UK_PASTE);
+    for (t = 0; t < QD_TRACKS; t++)
+        qd_track_copy(qd_proj_pat(&A.proj, k), t, S.sc_cut ? &g_scut : qd_proj_cpat(&A.proj, S.sc_take), t);
+    clip_undo_end();
+    A.proj.scene[k] = S.sc_cut ? g_scut_set : A.proj.scene[S.sc_take];
+    if (S.sc_cut)                                       /* (a cut pastes once; a copy as often as tapped) */
+        S.sc_take = -1;
+    snprintf(v, sizeof v, "PASTED SCENE %d", k + 1);
+    show_name(v);
 }
 
 /* CLIPS' step buttons, two under each track: the first stops it, the second mutes it (Shift: solo) */
@@ -1224,6 +1277,8 @@ static const char *const SCN_LAUNCH_NAME[8] = { "PROJECT", "NOW", "BEAT", "1 BAR
 static const char *const SCN_LAUNCH3[8] = { "PRJ", "NOW", "BT", "1B", "2B", "4B", "8B", "END" };
 
 static int scn_on(void) { return S.session && S.sn_mode == SN_SCENES && S.mode == MV_HOME && !S.over; }
+/* the bank of 16 scenes the steps (and SCENES' pads) are: SCENES' the edited scene's, else the clips' rows shown */
+static int scn_bank(void) { return ((scn_on() ? S.scn : S.srow) / 16) * 16; }
 static int arr_on(void) { return S.session && S.sn_mode == SN_ARRANGE && S.mode == MV_HOME && !S.over; }
 static int sq_on(void) { return S.session && S.sn_mode == SN_SEQ && S.mode == MV_HOME && !S.over; }
 
@@ -1233,9 +1288,9 @@ static int sq_on(void) { return S.session && S.sn_mode == SN_SEQ && S.mode == MV
 enum { SQP_TIME, SQP_REC, SQP_CLOCK, SQP_N };
 static const char *const SQP_NAME[SQP_N] = { "TIME", "REC", "CLOCK" };
 static const char *const SQP_LAB[SQP_N][8] = {
-    { "TEMPO", "SWING", "LAUNCH", "METRO", "CLICK", "", "", "" },
+    { "TEMPO", "SWING", "LAUNCH", "METRO", "CLICK", "COUNTIN", "", "" },
     { "MODE", "QUANT", "TAKE", "AUTO", "", "", "", "" },
-    { "CLK OUT", "CC OUT", "", "", "", "", "", "" },
+    { "CLK OUT", "CC OUT", "CLK IN", "", "", "", "", "" },
 };
 static void sq_knob(int i, int d)
 {
@@ -1256,6 +1311,7 @@ static void sq_knob(int i, int d)
             break;
         case 3: A.metro = d > 0; break;
         case 4: A.metro_lvl = clamp(A.metro_lvl + d * 5, 0, 100); break;
+        case 5: S.cin_bars = clamp(S.cin_bars + d, 0, 4); break;
         }
     } else if (S.seqp == SQP_REC) {
         switch (i) {
@@ -1269,6 +1325,11 @@ static void sq_knob(int i, int d)
             A.ui.clk_out = d > 0;
         else if (i == 1)
             A.ui.cc_out = d > 0;
+        else if (i == 2) {                              /* CLOCK IN: off, a clock followed now is let go */
+            A.ui.clk_in = d > 0;
+            if (!A.ui.clk_in)
+                A.seq.ext = 0, A.seq.ext_wait = 0;
+        }
     }
 }
 static int seqp_lab_ok(int i) { return SQP_LAB[S.seqp][i][0] != 0; }
@@ -1297,6 +1358,12 @@ static void sq_val(int i, char *v, int cap, int *frac)
             break;
         case 3: snprintf(v, (size_t)cap, A.metro ? "ON" : "OFF"); break;
         case 4: snprintf(v, (size_t)cap, "%d", A.metro_lvl), *frac = A.metro_lvl * 10; break;
+        case 5:
+            if (S.cin_bars)
+                snprintf(v, (size_t)cap, "%dB", S.cin_bars);
+            else
+                snprintf(v, (size_t)cap, "OFF");
+            break;
         }
     } else if (S.seqp == SQP_REC) {
         switch (i) {
@@ -1305,8 +1372,8 @@ static void sq_val(int i, char *v, int cap, int *frac)
         case 2: snprintf(v, (size_t)cap, A.proj.rec_dub == QD_TAKE_REPLACE ? "REP" : "DUB"); break;
         case 3: snprintf(v, (size_t)cap, A.proj.rec_auto ? "ON" : "OFF"); break;
         }
-    } else if (i < 2)
-        snprintf(v, (size_t)cap, (i ? A.ui.cc_out : A.ui.clk_out) ? "ON" : "OFF");
+    } else if (i < 3)
+        snprintf(v, (size_t)cap, (i == 2 ? A.ui.clk_in : i ? A.ui.cc_out : A.ui.clk_out) ? "ON" : "OFF");
 }
 
 static int scene_used(int k)                            /* a clip in slot k on any track */
@@ -1631,7 +1698,7 @@ static void arr_knob(int i, int d)
 /* SCENES' pads: the two lower rows the 16 scenes (1-8 above 9-16): tap edits it, Shift + tap launches it */
 static void scn_pad(int idx, int down)
 {
-    const int k = idx < 8 ? idx + 8 : idx - 8;
+    const int k = (S.scn / 16) * 16 + (idx < 8 ? idx + 8 : idx - 8);
     if (!down || idx >= 16)
         return;
     if (S.shift)
@@ -1688,6 +1755,7 @@ static void sess_toggle(void)                           /* Menu: Sequence <-> Se
         S.seq_keep = S.seq_mode;
     S.session = !S.session;
     S.belt = 0;
+    S.qbelt = 0;
     S.top_hidden = 0;
     S.page_latch = 0;
     if (S.session) {
@@ -1998,6 +2066,15 @@ static void knob(int i, int delta)
         sq_knob(i, d);
         return;
     }
+    if (S.mode == MV_SOUND && S.trig_pg) {              /* TRIG: the step's values, as the home knobs (the core sees no
+                                                         * page open for the turn: held steps, the track's defaults) */
+        const int keep = A.ui.hmode, keep_l = A.ui.latch, second = S.shift && i >= 1 && i <= 5;
+        A.ui.latch = QD_LATCH_NONE;
+        A.ui.hmode = S.shift && i == 7 ? UI_F_FUNC : HOME_MODE[i];
+        qd_app_knob(&A, second ? QD_K_2 : QD_K_1, d);
+        A.ui.hmode = keep, A.ui.latch = keep_l;
+        return;
+    }
     if (S.mode == MV_SOUND) {
         const spage_t *sp = &SND[S.spage];
         if (i < sp->n && S.mod_hold >= 0) {             /* ENV / LFO held: knob i's value modulated by the one last
@@ -2039,6 +2116,55 @@ static void knob(int i, int delta)
     }
 }
 
+/* ------------------------------------------------------------------ Sequence's page belt --- */
+/* the wheel at home (TRACKS) in Sequence: PRESET, TRIG, OSC, SPEECH, FILT, ENV, LFO, FX, TOOLS; a press enters the one
+ * chosen; Back from a page comes up to it, again home. The knobs stay the page's last while it is up */
+enum { QB_PRESET, QB_TRIG, QB_OSC, QB_SPEECH, QB_FILT, QB_ENV, QB_LFO, QB_FX, QB_TOOLS, QB_N };
+static const char *const QB_NAME[QB_N] = { "PRESET", "TRIG", "OSC", "SPEECH", "FILT", "ENV", "LFO", "FX", "TOOLS" };
+static int qbelt_on(void) { return S.qbelt && !S.session && !S.over; }
+static int qbelt_here(void)                             /* the page up now, as the belt's (home: TRIG) */
+{
+    if (S.mode == MV_FX) return QB_FX;
+    if (S.mode == MV_CORE && S.scr == QD_SCR_TOOLS) return QB_TOOLS;
+    if (S.mode == MV_BROWSE) return QB_PRESET;
+    if (S.mode == MV_SOUND) {
+        const int p = snd_pad_of(S.spage);
+        return S.trig_pg || p <= 0 ? QB_TRIG : QB_OSC + p - 1;
+    }
+    return QB_TRIG;
+}
+static void qbelt_open(int sel)
+{
+    S.qbelt = 1;
+    S.qbelt_from = qbelt_here();
+    S.qbelt_sel = clamp(sel, 0, QB_N - 1);
+    S.qbelt_ms = S.now ? S.now : 1;
+    S.name_until = S.now;
+}
+static void qbelt_move(int d)
+{
+    const int b = clamp(S.qbelt_sel + d, 0, QB_N - 1);
+    if (b != S.qbelt_sel)
+        S.qbelt_from = S.qbelt_sel, S.qbelt_ms = S.now ? S.now : 1;
+    S.qbelt_sel = b;
+    S.name_until = S.now;
+}
+static void qbelt_enter(void)
+{
+    const int n = S.qbelt_sel;
+    S.qbelt = 0;
+    switch (n) {
+    case QB_PRESET: seq_go(SQ_TRACKS); qd_br_turn(&A, 0); break;   /* (the browser: the track's sound) */
+    case QB_FX: S.seq_mode = SQ_FX; seq_go(SQ_FX); break;
+    case QB_TOOLS: S.seq_mode = SQ_TOOLS; seq_go(SQ_TOOLS); break;
+    default:                                            /* TRIG .. LFO: TRIG / SOUND's pad 1 .. 6, its page last chosen */
+        S.seq_mode = SQ_SOUND;
+        seq_go(SQ_SOUND);
+        snd_go(n == QB_TRIG ? SP_TRIG : S.grp_last[n - QB_TRIG]);
+        break;
+    }
+}
+
 static void wheel(int delta)
 {
     const int d = detents(8, delta, 1);
@@ -2069,6 +2195,11 @@ static void wheel(int delta)
             S.belt_from = S.belt_sel, S.belt_ms = S.now ? S.now : 1;
         S.belt_sel = b;
         S.name_until = S.now;                           /* (a name showing gives way to it) */
+    } else if (qbelt_on()) {                            /* Sequence's belt: the page chosen */
+        qbelt_move(d);
+    } else if (!S.session && S.mode == MV_HOME && !S.shift && !A.ui.nheld && !page_mode() && S.tpad < 0 &&
+               !S.mute_down) {                          /* Sequence at home: the page belt opens */
+        qbelt_open(QB_TRIG + (d < 0 ? -1 : 1));
     } else if (clips_on() && S.shift) {                 /* CLIPS, Shift: the launch quantize */
         int i, k = 0;
         for (i = 0; i < (int)sizeof LAUNCH_ORDER; i++)
@@ -2127,8 +2258,20 @@ static void wheel(int delta)
             S.turn_ms = S.now ? S.now : 1;
         } else
             qd_br_turn(&A, 0);                          /* Shift: the track's sound: the browser opens where it is */
-    } else if (S.mode == MV_SOUND) {
-        snd_go(S.spage + d < 0 ? 0 : S.spage + d >= NSND ? NSND - 1 : S.spage + d);
+    } else if (S.mode == MV_SOUND) {                    /* the page's own subpages (TRIG, VOICING, AMP; ENV 1-3 ..) */
+        const int p = S.trig_pg ? 0 : snd_pad_of(S.spage), cur = S.trig_pg ? SP_TRIG : S.spage;
+        int j = 0, n = 0;
+        if (p < 0) {
+            snd_go(S.spage + d < 0 ? 0 : S.spage + d >= NSND ? NSND - 1 : S.spage + d);
+        } else {
+            while (n < 4 && SND_PAD[p][n] >= 0)
+                n++;
+            while (j < n && SND_PAD[p][j] != cur)
+                j++;
+            j = clamp((j < n ? j : 0) + (d < 0 ? -1 : 1), 0, n - 1);
+            S.grp_last[p] = SND_PAD[p][j];
+            snd_go(SND_PAD[p][j]);
+        }
     } else if (S.mode == MV_FX) {
         fx_go(S.fpage + d < 0 ? 0 : S.fpage + d >= NFX ? NFX - 1 : S.fpage + d);
     } else if (mix_native()) {
@@ -2172,6 +2315,11 @@ static void wheel_click(int down)
     if (S.belt && S.session && S.mode == MV_HOME && !S.over) {   /* the belt: into the page chosen */
         if (down)
             belt_enter();
+        return;
+    }
+    if (qbelt_on()) {                                   /* Sequence's belt: into the page chosen */
+        if (down)
+            qbelt_enter();
         return;
     }
     if (scn_on() && !S.shift) {                         /* SCENES: the edited scene launched */
@@ -2465,8 +2613,8 @@ static void shift_step(int i)
     case SS_GROOVE: S.over = S.over == OV_GROOVE ? OV_NONE : OV_GROOVE; break;
     case SS_KEYS: S.over = S.over == OV_KEYS ? OV_NONE : OV_KEYS; break;
     case SS_LAYOUT: {
-        static const char *const LN[3] = { "PADS IN KEY", "PADS CHROMATIC", "PADS: DRUMS" };
-        S.layout = (S.layout + 1) % 3;
+        static const char *const LN[4] = { "PADS IN KEY", "PADS CHROMATIC", "PADS: DRUMS", "SOUND LOCKS" };
+        S.layout = (S.layout + 1) % 4;
         show_name(LN[S.layout]);
         break;
     }
@@ -2512,8 +2660,58 @@ static int pad_is_root(int idx)
     return (pad_note(idx) - root) % 12 == 0;
 }
 
+/* the SOUND LOCKS layout (Shift + step 8's fourth): pad n of the note rows (from the top left) plays the project's pool
+ * sound n at the track's root; a step held: a tap locks that sound on it. 0: no sound there */
+static int lock_sound_of(int idx)
+{
+    const int top = top_row_on() ? 2 : 3, r = idx / 8, k = (top - r) * 8 + idx % 8 + 1;
+    if (r > top || k < 1 || k > A.proj.nsound || !qd_sound_name(&A.proj, k)[0])
+        return 0;
+    return k;
+}
+static int lock_root(void)
+{
+    int scale, root;
+    qd_track_key(&A.proj, qd_ctl_cpat(&A), A.sel, &scale, &root);
+    return qd_scale_note(scale, root, PAD_OCT + S.oct, 0);
+}
+static void lock_pad(int idx, int vel)
+{
+    if (vel > 0) {
+        const int k = lock_sound_of(idx);
+        int h;
+        if (!k || A.sel >= QD_TRACKS)
+            return;
+        if (A.ui.nheld || A.ui.wk_down) {               /* a step held (or just down): the sound locked on it, the step
+                                                         * on; its release no tap */
+            qd_pattern_t *P = qd_ctl_pat(&A);
+            for (h = 0; h < A.ui.nheld; h++)
+                qd_step_set_sound(P, A.sel, A.ui.held[h], k);
+            for (h = 0; h < 16; h++)
+                if (A.ui.wk_down >> h & 1u) {
+                    const int st = A.ui.page[A.sel] * QD_PAGE + h;
+                    if (!qd_step_is_on(qd_step(P, A.sel, st)))
+                        qd_step_on(P, A.sel, st);
+                    qd_step_set_sound(P, A.sel, st, k);
+                    A.ui.wk_pending &= (uint16_t)~(1u << h);
+                }
+            show_name("SOUND LOCKED");
+        } else
+            show_name(qd_sound_name(&A.proj, k));
+        S.pad_note[idx] = (int8_t)lock_root();
+        qd_player_key_on_p(&A.player, A.sel, S.pad_note[idx], S.vel_fixed ? 127 : vel, qd_sound_patch(&A.proj, k));
+    } else if (S.pad_note[idx] >= 0) {
+        qd_player_key_off(&A.player, A.sel, S.pad_note[idx]);
+        S.pad_note[idx] = -1;
+    }
+}
+
 static void note_pad(int idx, int vel)
 {
+    if (S.layout == 3 && (vel > 0 || S.pad_note[idx] >= 0)) {   /* SOUND LOCKS */
+        lock_pad(idx, vel);
+        return;
+    }
     if (vel > 0 && S.vel_fixed)                         /* (velocity off: every note at full) */
         vel = 127;
     if (vel > 0) {
@@ -2695,7 +2893,12 @@ static void surface_note(int note, int vel)
         }
         if ((scn_on() || arr_on() || sq_on()) && !S.shift) {   /* SCENES, ARRANGE, SEQ: the steps launch the scenes */
             if (down)
-                scene_launch(i);
+                scene_launch(scn_bank() + i);
+            return;
+        }
+        if (clips_on() && (S.copy_down || S.delete_down)) {   /* CLIPS, Copy / Delete held: the steps the scenes */
+            if (down)
+                scene_take_step(scn_bank() + i);
             return;
         }
         if ((clips_on() || mix_on()) && !S.shift) {   /* CLIPS, MIX: stop and mute, two under each track */
@@ -2824,6 +3027,19 @@ static void surface_cc(int cc, int v)
                 sent = -1;
                 break;
             }
+            if (qbelt_on()) {                           /* Sequence's belt closed: home */
+                S.qbelt = 0;
+                S.seq_mode = SQ_TRACKS;
+                seq_go(SQ_TRACKS);
+                sent = -1;
+                break;
+            }
+            if (!S.session && !QD_LATCH_MENU(A.ui.latch) && (S.mode == MV_SOUND || S.mode == MV_FX ||
+                                                             (S.mode == MV_CORE && S.scr == QD_SCR_TOOLS))) {
+                qbelt_open(qbelt_here());               /* Sequence: out of a page, up to the belt */
+                sent = -1;
+                break;
+            }
             if (S.session && S.mode == MV_HOME && S.belt) {   /* the belt closed: the clips (SCENES, ARRANGE: left) */
                 S.belt = 0;
                 if (S.sn_mode >= SN_SCENES)
@@ -2917,7 +3133,7 @@ static void surface_cc(int cc, int v)
             else if (!S.copy_used && clips_on())
                 clip_duplicate();
             if (!down && !S.delete_down)
-                S.cl_take = -1;
+                S.cl_take = -1, S.sc_take = -1;
         } else if (page_mode()) {
             if (!down)
                 S.pg_copied = -1;
@@ -2929,7 +3145,7 @@ static void surface_cc(int cc, int v)
         S.delete_down = down;
         if (clips_on() || (!down && S.cl_take >= 0)) {  /* CLIPS: held, a clip tapped is cut, then pasted (else gone) */
             if (!down && !S.copy_down)
-                S.cl_take = -1;
+                S.cl_take = -1, S.sc_take = -1;
             break;
         }
         if (page_mode())
@@ -2947,6 +3163,17 @@ static void surface_cc(int cc, int v)
                     clip_stop(t);
                 show_name("STOP ALL");
             }
+        } else if (down && S.cin_on) {                  /* PLAY during the count-in: called off */
+            pf_countin_cancel();
+            S.cin_on = 0;
+            show_name("COUNT-IN OFF");
+        } else if (down && !A.seq.playing && A.ui.rec && S.cin_bars > 0) {   /* armed, stopped: the count-in first */
+            const int bpm = qd_seq_bpm(&A.seq) > 0 ? qd_seq_bpm(&A.seq) : 120;
+            pf_countin(S.cin_bars * 4, (int)(44100LL * 60 / bpm), A.metro_lvl > 0 ? A.metro_lvl : 60);
+            S.cin_on = 1;
+            S.cin_play_up = 1;
+        } else if (!down && S.cin_play_up) {            /* (its release: no PLAY) */
+            S.cin_play_up = 0;
         } else
             btn(B_PLAY, down);
         break;
@@ -2982,6 +3209,11 @@ static void surface_cc(int cc, int v)
     case CC_LEFT:                                       /* the page of 16 steps the buttons show. CLIPS: the slots 4 rows
                                                          * on (Left twice: back to the first) */
     case CC_RIGHT:
+        if (clips_on() && S.shift) {                    /* CLIPS, Shift: a bank of 16 on or back */
+            if (down)
+                clip_rows(cc == CC_RIGHT ? 16 : -16);
+            break;
+        }
         if (clips_on()) {
             if (down && cc == CC_LEFT && S.left_ms && S.now - S.left_ms < DOUBLE_MS)
                 clip_rows(-NSLOT), S.left_ms = 0;
@@ -3005,6 +3237,8 @@ static void surface_cc(int cc, int v)
             qd_shift_undo(&A, S.shift ? 1 : -1);
         break;
     default:
+        if (cc >= CC_TRACK4 && cc <= CC_TRACK1 && down)
+            S.qbelt = 0;                                /* (a mode chosen: the belt gone) */
         if (cc >= CC_TRACK4 && cc <= CC_TRACK1) {       /* Sequence's modes: TRACKS, TRIG / SOUND, FX, TOOLS; Session's:
                                                          * CLIPS, MIDI FX, FX, MIX */
             if (S.session)
@@ -3210,7 +3444,7 @@ static void leds(void)
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
         if ((scn || arr || sq) && !S.shift) {          /* SCENES, ARRANGE, SEQ: the steps launch the scenes */
-            led_note(N_STEP0 + i, scene_led(i, blink));
+            led_note(N_STEP0 + i, scene_led(scn_bank() + i, blink));
             continue;
         }
         if ((clips || mix) && !S.shift) {               /* CLIPS, MIX: under each track its stop (the track's colour while it
@@ -3277,7 +3511,7 @@ static void leds(void)
             continue;
         }
         if (scn) {                                      /* SCENES: the lower rows the scenes, the one edited white */
-            const int k = i < 8 ? i + 8 : i - 8;
+            const int k = (S.scn / 16) * 16 + (i < 8 ? i + 8 : i - 8);
             led_note(N_PAD0 + i, (uint8_t)(i >= 16 ? C_OFF : k == S.scn ? C_WHITE : scene_led(k, blink)));
             continue;
         }
@@ -3319,6 +3553,10 @@ static void leds(void)
             const int pg = A.ui.page[A.sel], k = i >= 8 ? i - 8 : i + 8;
             led_note(N_PAD0 + i, (uint8_t)(k == ts->pstart[pg] || k == ts->pend[pg] ? C_WHITE
                                            : k > ts->pstart[pg] && k < ts->pend[pg] ? C_BLUE : C_GREY));
+            continue;
+        }
+        if (S.layout == 3 && S.mode != MV_IDLE) {       /* SOUND LOCKS: a pool sound orange, struck white, none dark */
+            led_note(N_PAD0 + i, (uint8_t)(S.pad_note[i] >= 0 ? C_WHITE : lock_sound_of(i) ? TRK_COL[1] : C_OFF));
             continue;
         }
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
@@ -3412,6 +3650,7 @@ void egm_init(const char *flash_path)
     S.spage = 3;                                        /* OSC 1: the sound's first page */
     S.fpage = 1;                                        /* CHORUS */
     S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = S.cl_take = S.mfx_pad = S.mfx_dbl = -1;
+    S.sc_take = -1;
     memset(S.tsel, -1, sizeof S.tsel);
     memset(S.mxg_row, -1, sizeof S.mxg_row);
     S.mod_hold = -1;
@@ -3472,6 +3711,18 @@ int egm_ui_step(uint32_t now_ms)
     clip_follow();
     scene_run();
     pf_sync();
+    if (S.cin_on) {                                     /* the count-in: its beats left shown; done: PLAY */
+        const int left = pf_countin_left();
+        if (left == 0) {
+            S.cin_on = 0;
+            tap(B_PLAY);
+        } else if (left > 0) {
+            char v[20];
+            snprintf(v, sizeof v, "COUNT-IN %d", left);
+            if (strcmp(v, S.name))
+                show_name(v);
+        }
+    }
     mix_glide();
     qd_app_tick_locked(&A, now_ms);
     if (S.rnd_pad >= 0 && !S.rnd_done && S.mode == MV_SOUND && now_ms - S.rnd_ms >= RND_MS) {   /* held a second */
@@ -3597,6 +3848,11 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (qbelt_on()) {                                   /* Sequence's belt */
+        const uint32_t dt = now_ms - S.qbelt_ms;
+        scr_belt(m, 1, QB_NAME, QB_N, S.qbelt_sel, S.qbelt_from, S.qbelt_ms && dt < BELT_MS ? (int)(dt * 1000u / BELT_MS) : -1);
+        return;
+    }
     if (S.over == OV_TSET || S.over == OV_KEYS) {       /* TRACK SETTINGS, KEYS & SCALES: the all-eight */
         static char val[8][16];
         const char *lab[8], *vp[8];
@@ -3627,7 +3883,7 @@ static void page_draw(mono_t *m, uint32_t now_ms)
     }
     if (S.belt && S.session && S.mode == MV_HOME && !S.over) {   /* the belt: the pages, the chosen one large */
         const uint32_t dt = now_ms - S.belt_ms;
-        scr_belt(m, SN_NAME, SN_N, S.belt_sel, S.belt_from, S.belt_ms && dt < BELT_MS ? (int)(dt * 1000u / BELT_MS) : -1);
+        scr_belt(m, 0, SN_NAME, SN_N, S.belt_sel, S.belt_from, S.belt_ms && dt < BELT_MS ? (int)(dt * 1000u / BELT_MS) : -1);
         return;
     }
     if (scn_on()) {                                     /* SCENES: the edited scene's eight */
@@ -3708,6 +3964,19 @@ static void page_draw(mono_t *m, uint32_t now_ms)
         char v[20];
         snprintf(v, sizeof v, "PAGE %d", A.ui.page[A.sel] + 1);
         scr_pages(m, "LOOP", v, trk_npage(), trk_loop(), A.ui.page[A.sel], qd_ctl_playing_page(&A, A.sel), now_ms);
+        return;
+    }
+    if (S.mode == MV_SOUND && S.trig_pg) {              /* TRIG: the eight values at once */
+        static kinfo_t all[8];
+        const char *lab[8], *val[8];
+        int frac[8], i;
+        for (i = 0; i < 8; i++) {
+            knob_info(i, &all[i]);
+            lab[i] = all[i].ok ? all[i].name : "";
+            val[i] = all[i].val;
+            frac[i] = all[i].frac;
+        }
+        scr_eight(m, lab, val, frac, 8);
         return;
     }
     if (S.mode == MV_SOUND) {
@@ -3910,6 +4179,7 @@ void egm_describe(char *out, int cap)
     {   /* the Shift pages' settings: the layout, velocity fixed, QUANTIZE's amount; the selected track's channel, voices,
          * MIDI out, key mode, swing (the clip's) and every scene's swing */
         const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " step1snd=%d", qd_step(qd_ctl_cpat(&A), A.sel, 0)->sound);
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " layout=%d velfix=%d qamt=%d tset=%d,%d,%d,%d,%d,%d",
                  S.layout, S.vel_fixed, S.q_amt, ts->chan + 1, ts->limit, ts->mout & QD_MOUT_CH, ts->key_global, ts->swing,
                  qd_ctl_cpat(&A)->swing);
@@ -3956,6 +4226,7 @@ void egm_describe(char *out, int cap)
         {   /* SCENES: the scene edited, its settings; the scene running; the song (each position: scene x repeats) */
             const qd_scene_t *c = &A.proj.scene[S.scn];
             int p;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " qbelt=%s", qbelt_on() ? QB_NAME[S.qbelt_sel] : "-");
             snprintf(out + strlen(out), (size_t)cap - strlen(out),
                      " belt=%s scn=%d set=%d,%s,%d,%d,%d,%d,%d,%d run=%d song=%s:%d pos=", S.belt ? SN_NAME[S.belt_sel] : "-",
                      S.scn + 1, c->bpm, SCN_FOLLOW[c->follow % QD_NFOLLOW], c->after, c->chance, c->repeats,
@@ -3967,8 +4238,9 @@ void egm_describe(char *out, int cap)
         }
         snprintf(out + strlen(out), (size_t)cap - strlen(out),   /* SEQ: its subpage; swing, metronome, click, record
                                                          * mode, quantize, take, automation, clock out, CC out */
-                 " seqp=%s seqv=%d,%d,%d,%d,%d,%d,%d,%d,%d", SQP_NAME[S.seqp], qd_proj_cpat(&A.proj, A.seq.cur)->swing, A.metro,
-                 A.metro_lvl, A.proj.rec_mode, A.proj.rec_quant, A.proj.rec_dub, A.proj.rec_auto, A.ui.clk_out, A.ui.cc_out);
+                 " seqp=%s seqv=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", SQP_NAME[S.seqp], qd_proj_cpat(&A.proj, A.seq.cur)->swing,
+                 A.metro, A.metro_lvl, A.proj.rec_mode, A.proj.rec_quant, A.proj.rec_dub, A.proj.rec_auto, A.ui.clk_out,
+                 A.ui.cc_out, A.ui.clk_in, S.cin_bars);
         {   /* the selected track's sound: its modulation slots (source:destination:depth) and LFOs (destination:depth) */
             const int16_t *pp = A.model.t[A.sel].patch;
             int k, first = 1;
@@ -3995,11 +4267,11 @@ void egm_describe(char *out, int cap)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", mix_val(t, S.mix_k));
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " slots=");   /* each track's slots holding a clip */
         for (t = 0; t < QD_TRACKS; t++) {
-            unsigned m = 0;
+            unsigned long long m = 0;
             int k;
             for (k = 0; k < NSLOT; k++)
-                m |= (unsigned)clip_has(k, t) << k;
-            snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%x", t ? "," : "", m);
+                m |= (unsigned long long)clip_has(k, t) << k;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%llx", t ? "," : "", m);
         }
     }
     {   /* the page shown: its trigs, and those with notes */

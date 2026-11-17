@@ -108,18 +108,22 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Copy / Delete held + a clip, in CLIPS | copied, then pasted where tapped / cut, then pasted where tapped (released first: deleted). Copy tapped alone: the selected clip duplicated into its track's next empty slot and launched. Undo takes each back |
 | Shift + the wheel, in CLIPS | the launch quantize: now (a 16th), a beat, 1 / 2 / 4 / 8 bars, the clip's end (the project's; new projects: 1 bar) |
 | Shift + the wheel pressed, in CLIPS | EMPTY SLOT: a scene over a track's empty slot stops the track (STOP, the default) or leaves it playing (KEEP); the project's |
-| - / +, Left / Right, in CLIPS | the slots shown a row / 4 rows; Left twice: the first four |
+| - / +, Left / Right, in CLIPS | the slots shown a row / 4 rows; Left twice: the first four; Shift + Left / Right: a bank of 16. There are 64 slots, a scene each (four banks of 16: an FM-1 project's A-D); the steps in SCENES, ARRANGE, SEQ and with Copy / Delete are the bank shown |
 | The wheel, in CLIPS | Session's page belt: CLIPS, MIDI FX, FX, MIX, SCENES, ARRANGE, SEQ, riding into the brain machine. Turn to choose, press to enter; Back closes it |
 | FX, pad 8 (either view) | PERFORM: the rows below are performance pads. Row 3: throws CHORUS, ECHO, ROOM, CRUSH, ROBOT, WARP, GLITCH, TV, fully on (Sequence: the selected track's sends; Session: every track's). Row 2: beat repeat 1/4, 1/4T, 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T. Row 1: filter LP 1, LP 2, HP 1, HP 2 (slide along to sweep), tape STOP, HALF, REV, SCRATCH. Repeat, filter and tape act on the whole mix. Held: on while held; two taps: latched (a tap: off); of a kind the newest wins. Pad 8 again: everything let go |
 | ENV / LFO held + a knob, in TRIG / SOUND | the mod matrix: the envelope or LFO last chosen on that pad modulates the knob's value, the turn its depth (pop-up ENV1>CUTOFF +31; NO MOD: a value nothing can modulate). Each is one of the sound's eight modulation slots (sources now also ENV 1-3, LFO 1-3); a tap on ENV / LFO still turns their pages |
 | Shift + step 1 | PROJECTS: the 32 projects on the pads (1-8 the top row; the open one white, the others in their colours). Tap: open it; an empty pad: a new project there. Copy held + a project, then an empty pad: copied. Delete held + a project, twice: deleted. Knob 1: the open project's name (ideas), knob 2: its colour. Back: closed |
 | A finger on the wheel | the knobs turned keep the all-eight view (no single pop-up) |
+| The wheel at home, in Sequence | Sequence's page belt: PRESET, TRIG, OSC, SPEECH, FILT, ENV, LFO, FX, TOOLS; press to enter. In a sound page the wheel turns its own subpages (TRIG / VOICING / AMP, ENV 1-3 ..); Back goes up to the belt, again home. Left / Right turn the step pages |
+| Pad 1, in TRIG / SOUND | TRIG first (the step's eight values: velocity, length, micro, ratchet, chance, condition, trig, slide; a step held: its own, else the track's defaults), then VOICING, AMP |
+| SOUND LOCKS (Shift + step 8's fourth layout) | pad n of the note rows plays the project's pool sound n at the track's root (its name shown); a step held + a pad: that sound locked on the step (an empty step turned on) |
+| Copy / Delete + a step, in CLIPS | the steps are the scenes: Copy + a step, then a step: the scene copied there; Delete + a step: cut, the next step pastes it (let go first: deleted). Undo takes each back |
 | Shift + Left / Right | the first page, the last |
 | Shift + Rec | record afresh: the selected track's clip cleared (undo brings it back), then armed |
 | Shift + Copy, in CLIPS | the scene playing (else the selected clip's row) into the next empty scene, launched |
 | Volume (the main knob) | the output level; its pop-up while it turns (VOLUME and a percent) |
 | The idle screen (the brain) | any pad, step or button press wakes it and does nothing else |
-| SEQ (Session, from the belt) | the wheel: TIME (TEMPO, SWING: every scene's, LAUNCH quantize, METRO, CLICK level), REC (MODE live / step, QUANT, TAKE overdub / replace, AUTOmation), CLOCK (CLK OUT, CC OUT). Steps 1-16: launch scenes 1-16. Back: the belt |
+| SEQ (Session, from the belt) | the wheel: TIME (TEMPO, SWING: every scene's, LAUNCH quantize, METRO, CLICK level, COUNT-IN: 1-4 bars of clicks before PLAY when recording is armed; PLAY again calls it off), REC (MODE live / step, QUANT, TAKE overdub / replace, AUTOmation), CLOCK (CLK OUT, CC OUT, CLK IN: an incoming MIDI clock followed or ignored). Steps 1-16: launch scenes 1-16. Back: the belt |
 | SCENES (Session, from the belt) | a scene's settings, the wheel the scene (1-16). Knobs: TEMPO (OFF: the project's), FOLLOW (NONE, NEXT, PREVIOUS, FIRST, ANY, OTHER), AFTER (its length in bars; AUTO: its longest clip), CHANCE, REPEATS, LAUNCH (PROJECT: the project's quantize), NAME (INTRO, VERSE, CHORUS ..), COLOUR (a track's). The wheel pressed: the scene launched. Pads, the lower two rows: the scenes (tap: edit it; Shift + tap: launch it). Steps 1-16: launch scenes 1-16. Back: the belt |
 | ARRANGE (Session, from the belt) | the song: knob i the scene at position i of the 8 shown (down to END: the song ends there), Shift + knob its repeats; the wheel the next 8 positions (32 in all). The wheel pressed: the song from the start; again: stopped (the clips play on). Pads: the 32 positions (1-8 the top row; tap: the song from there). Steps 1-16: launch scenes 1-16. Back: the belt |
 | Shift + Play, in Session | every clip stopped at the next bar, the transport running |
@@ -139,3 +143,23 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 ## Licence
 
 MPL-2.0, as the core. See `THIRD_PARTY_LICENSES.md`, in particular the note on SAM.
+
+## FM-1 projects
+
+`tools/fm1import/convert.sh` brings the projects of an FM-1 EVILGENIUS backup (the web manager's `.egbak`, or the store
+`.bin` that `fizz_xdata.py backup` writes: the same 200704 bytes) to the Move as new projects. Each FM-1 project
+takes the first free project slot; its 64 patterns are the Move's 64 scenes (bank A scenes 1-16, B 17-32 ..), a
+pattern's six tracks that scene's clips on tracks 1-6 (7 and 8 start empty), with their pages, steps, locks, sounds,
+the pool, the MIDI FX groups and the tracks' names, kinds and mix.
+
+```bash
+tools/fm1import/convert.sh "EVILGENIUS backup.egbak" --unit
+```
+
+`--unit` stops EvilGenius on the Move, keeps its store (on the unit as `evilgenius-store.bin.before-fm1-DATE`, and in
+`build/unit-backup/`), adds the projects and starts it again. A file name instead of `--unit` converts into a store
+image here. `--first N` starts at project slot N.
+
+The backup is read with the FM-1's own code, built from an FM-1 EvilGenius checkout (`FM1=`, by default
+`../../FM1/EvilGenius` beside this repository; it is only read). A modulation to the envelope destinations FM-1 0.1.4
+added does nothing on the Move's engine; the converter counts them.

@@ -320,7 +320,7 @@ typedef struct {
 
 /* the Move's SCENES (2026-11-17): a scene's settings. Its length is AFTER bars (0: AUTO, its longest clip); it plays
  * REPEATS lengths, then its FOLLOW action, which happens CHANCE % of the times (else it plays another length first) */
-#define QD_NSCENE 16
+#define QD_NSCENE 64                     /* (four banks of 16: an FM-1 project's A..D, decided 17 November 2026) */
 #define QD_NSONG 32                     /* the Move's ARRANGE: positions in the song */
 enum { QD_FOLLOW_NONE, QD_FOLLOW_NEXT, QD_FOLLOW_PREV, QD_FOLLOW_FIRST, QD_FOLLOW_ANY, QD_FOLLOW_OTHER, QD_NFOLLOW };
 typedef struct {

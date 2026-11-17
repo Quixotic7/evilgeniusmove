@@ -32,6 +32,45 @@ static uint32_t tp_n;                   /* frames since the tape began */
 static double lp_hz = LP_OPEN, hp_hz = HP_OPEN, lp_t = LP_OPEN, hp_t = HP_OPEN;
 static float lp_s[2][2], hp_s[2][2];    /* the filters' states (ic1, ic2) per channel */
 
+/* the count-in: requested (the UI's), running (the audio side's) */
+static volatile int ci_req_beats, ci_req_spb, ci_req_lvl, ci_req_gen, ci_cancel_gen;
+static int ci_gen = -1, ci_cgen = 0, ci_beats, ci_spb, ci_lvl, ci_on;
+static volatile int ci_left = -1;
+static uint32_t ci_n;
+static double ci_ph, ci_env, ci_freq;
+
+void pf_countin(int beats, int spb, int level)
+{
+    ci_req_beats = beats, ci_req_spb = spb < 1000 ? 1000 : spb, ci_req_lvl = level;
+    ci_left = beats;
+    ci_req_gen++;
+}
+int pf_countin_left(void) { return ci_left; }
+void pf_countin_cancel(void) { ci_cancel_gen++; ci_left = -1; }
+
+static float countin_sample(void)                       /* (one sample of the clicks: a short decaying sine) */
+{
+    float x;
+    if (!ci_on)
+        return 0;
+    if (ci_n % (uint32_t)ci_spb == 0) {                 /* a beat: its click (the bar's first higher) */
+        const uint32_t b = ci_n / (uint32_t)ci_spb;
+        if (b >= (uint32_t)ci_beats) {
+            ci_on = 0;
+            ci_left = 0;
+            return 0;
+        }
+        ci_left = ci_beats - (int)b;
+        ci_freq = b % 4 == 0 ? 1760.0 : 1320.0;
+        ci_env = 1.0;
+    }
+    ci_ph += ci_freq / SR;
+    x = (float)(sin(2 * M_PI * ci_ph) * ci_env * ci_lvl / 100.0 * 0.5);
+    ci_env *= 0.9985;
+    ci_n++;
+    return x;
+}
+
 static const double REP_BEATS[PF_REP_N] = { 1.0, 2.0 / 3, 0.5, 1.0 / 3, 0.25, 1.0 / 6, 0.125, 1.0 / 12 };
 static const double F_LP[PF_FILT_N] = { 1200.0, 300.0, LP_OPEN, LP_OPEN };
 static const double F_HP[PF_FILT_N] = { HP_OPEN, HP_OPEN, 300.0, 1500.0 };
@@ -94,13 +133,23 @@ void pf_process(int16_t *io, int frames)
     float lg = 0, lk = 0, hg = 0, hk = 0;
     int filt_on;
     take_wanted();
+    if (ci_req_gen != ci_gen) {                         /* (a count-in asked for: from this block) */
+        ci_gen = ci_req_gen;
+        ci_beats = ci_req_beats, ci_spb = ci_req_spb, ci_lvl = ci_req_lvl;
+        ci_n = 0, ci_env = 0, ci_ph = 0;
+        ci_on = 1;
+    }
+    if (ci_cancel_gen != ci_cgen) {
+        ci_cgen = ci_cancel_gen;
+        ci_on = 0;
+    }
     {
         const int f = w_filt;
         lp_t = f >= 0 ? F_LP[f] : LP_OPEN;
         hp_t = f >= 0 ? F_HP[f] : HP_OPEN;
     }
     for (n = 0; n < frames; n++) {
-        float in[2], out[2];
+        float in[2], out[2], cix = 0;
         in[0] = io[2 * n] / 32768.0f, in[1] = io[2 * n + 1] / 32768.0f;
         g_ring[0][g_w & (RB - 1)] = in[0], g_ring[1][g_w & (RB - 1)] = in[1];
         g_w++;
@@ -161,6 +210,9 @@ void pf_process(int16_t *io, int frames)
                 }
             } else
                 lp_s[c][0] = lp_s[c][1] = hp_s[c][0] = hp_s[c][1] = 0;
+            if (c == 0)
+                cix = countin_sample();
+            x += cix;
             x = x > 1 ? 1 : x < -1 ? -1 : x;
             io[2 * n + c] = (int16_t)(x * 32767.0f);
         }

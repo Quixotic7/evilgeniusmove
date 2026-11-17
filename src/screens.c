@@ -771,9 +771,10 @@ void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, co
 /* after the board's frames: the pages' boxes ride a belt into the brain machine at the right; the chosen one large in
  * the middle (x 37..66), its neighbours small (36 apart), its name under the belt. Moving (t < 1000, from the page
  * before): every box small, sliding, the rollers turning with them */
+static const belt_icon_t *g_belt_icons = BELT_ICON;
 static void belt_icon(mono_t *m, int k, int cx, int cy)
 {
-    const belt_icon_t *ic = &BELT_ICON[k];
+    const belt_icon_t *ic = &g_belt_icons[k];
     int x, y;
     for (y = 0; y < ic->h; y++)
         for (x = 0; x < ic->w; x++)
@@ -781,8 +782,9 @@ static void belt_icon(mono_t *m, int k, int cx, int cy)
                 mono_pset(m, cx - ic->w / 2 + x, cy - ic->h / 2 + y, 1);
 }
 
-void scr_belt(mono_t *m, const char *const *names, int n, int sel, int from, int t)
+void scr_belt(mono_t *m, int seq, const char *const *names, int n, int sel, int from, int t)
 {
+    g_belt_icons = seq ? SEQ_ICON : BELT_ICON;
     const int moving = t >= 0 && t < 1000;
     const int v1000 = moving ? from * 1000 + (sel - from) * t : sel * 1000;   /* (the belt's place, in thousandths) */
     int k, x, y;

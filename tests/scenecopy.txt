@@ -1,0 +1,26 @@
+# CLIPS, Copy / Delete held: the steps are the scenes. Copy + step 1, then step 6: scene 1 copied to 6; Delete + step 6,
+# let go: deleted; Undo: back
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session (CLIPS)
+cc 50 0
+wait 100
+state before
+cc 60 127                # Copy held: step 1, then step 6
+note 16 100
+note 16 0
+note 21 100
+note 21 0
+cc 60 0
+wait 100
+state copied
+cc 119 127               # Delete held + step 6, let go: deleted
+note 21 100
+note 21 0
+cc 119 0
+wait 100
+state deleted
+cc 56 127                # Undo: back
+cc 56 0
+wait 100
+state undone

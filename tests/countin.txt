@@ -1,0 +1,37 @@
+# SEQ: CLOCK IN off: a MIDI START ignored; COUNT-IN 1 bar: armed, PLAY: a bar of clicks, then playing
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session; the belt to SEQ (six on), pressed
+cc 50 0
+wait 100
+cc 14 1
+cc 14 1
+cc 14 1
+cc 14 1
+cc 14 1
+cc 14 1
+cc 3 127
+cc 3 0
+wait 300
+cc 14 1                  # REC, CLOCK: CLK IN off
+cc 14 1
+wait 100
+cc 73 124
+wait 100
+state clkin-off
+pkt 2F FA 00 00          # a MIDI START from USB-A: ignored
+wait 300
+state start-ignored
+cc 14 127                # back to TIME: COUNT-IN 1 bar
+cc 14 127
+wait 100
+cc 76 4
+wait 100
+state set
+cc 86 127                # armed; PLAY: the count-in
+cc 86 0
+tap 85
+wait 1000
+state counting
+wait 1500
+state playing

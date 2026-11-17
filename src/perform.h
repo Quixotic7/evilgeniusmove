@@ -18,5 +18,10 @@ void pf_set(int repeat, int filter, int tape, int bpm);
 void pf_process(int16_t *stereo, int frames);
 /* the state as the audio side has it (tests): the source (0 live, 1 repeat, 2 tape), the filter's cutoffs (Hz) */
 void pf_state(int *src, int *lp_hz, int *hp_hz);
+/* the count-in (SEQ > TIME): beats clicks, spb samples apart (the first of every four accented), at level 0..100;
+ * pf_countin_left: the beats still to click (0: done, -1: none running); cancel: stopped */
+void pf_countin(int beats, int spb, int level);
+int pf_countin_left(void);
+void pf_countin_cancel(void);
 
 #endif

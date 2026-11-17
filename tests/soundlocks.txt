@@ -1,0 +1,26 @@
+# Shift + step 8 four times: SOUND LOCKS; a pad plays its pool sound at the root; a step held + a pad: locked on it
+tap 85                   # out of the title
+wait 300
+cc 49 127
+note 23 100
+note 23 0
+note 23 100
+note 23 0
+note 23 100
+note 23 0
+cc 49 0
+wait 100
+state layout
+note 84 100              # the note rows' first pad: pool sound 1
+wait 300
+state sound1
+shot 01-sound1
+note 84 0
+wait 100
+note 16 100              # step 1 held + the second pad: sound 2 locked on it
+note 85 100
+wait 100
+note 85 0
+note 16 0
+wait 300
+state locked

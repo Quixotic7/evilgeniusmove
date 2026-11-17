@@ -566,8 +566,16 @@ static uint32_t ser_hdr(const qd_app_t *a, uint8_t *b)
 #define QD_SCENE_REC 9                                  /* (a scene's bytes in the header record) */
 /* the header record's whole length now (the Move's: the rooms, the clips, EMPTY SLOT, the tempo, the scenes, the
  * song, the colour) */
-#define HDR_FULL (2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + \
-                  QD_NTRACK * QD_NROOM + 2 * QD_NTRACK + 1 + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG + 1)
+#define HDR_BASE (2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + \
+                  QD_NTRACK * QD_NROOM + 2 * QD_NTRACK + 1)   /* (.. to EMPTY SLOT) */
+#define HDR_FULL (HDR_BASE + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG + 1)
+/* a record's scenes (16 before the 64 of 2026-11-17) and whether it ends in the colour: from its length */
+static int hdr_nscene(uint32_t len, int *col)
+{
+    const int32_t rest = (int32_t)len - HDR_BASE - 2 - 2 * QD_NSONG;
+    *col = rest >= 0 && rest % QD_SCENE_REC == 1;
+    return rest < 0 ? -1 : rest / QD_SCENE_REC;
+}
 static int g_clips_read;                                /* the Move: the project's record gave each track's clip */
 static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
 {
@@ -582,7 +590,11 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
         return 0;
     memcpy(ps->pname[p], b + o, QD_PROJ_NAME), o += QD_PROJ_NAME;
     ps->pname[p][QD_PROJ_NAME - 1] = 0;
-    ps->pcol[p] = len == HDR_FULL ? b[len - 1] : 0;     /* (the Move: its colour; older records: none) */
+    {
+        int col;
+        hdr_nscene(len, &col);
+        ps->pcol[p] = col ? b[len - 1] : 0;             /* (the Move: its colour; older records: none) */
+    }
     if (!apply)
         return 1;
     ps->pdemo = b[o++];
@@ -633,15 +645,20 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     o += 1;
     qd_scenes_init(pr);
     pr->bpm = 0;
-    if (o + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG <= len) {   /* the Move: the tempo, SCENES, ARRANGE */
+    {
+    int col;
+    const int ns = hdr_nscene(len, &col);               /* (16 scenes before 2026-11-17's 64: the rest their defaults) */
+    if (ns >= 0) {                                      /* the Move: the tempo, SCENES, ARRANGE */
         pr->bpm = (uint16_t)(b[o] | b[o + 1] << 8);
         if (pr->bpm < QD_BPM_MIN || pr->bpm > QD_BPM_MAX)
             pr->bpm = 0;
         else if (!a->seq.ext)
             qd_seq_tempo_mbpm(&a->seq, (int32_t)pr->bpm * 1000);
         o += 2;
-        for (t = 0; t < QD_NSCENE; t++, o += QD_SCENE_REC) {
-            qd_scene_t *c = &pr->scene[t];
+        for (t = 0; t < ns; t++, o += QD_SCENE_REC) {
+            qd_scene_t *c = &pr->scene[t < QD_NSCENE ? t : QD_NSCENE - 1];
+            if (t >= QD_NSCENE)
+                continue;
             const uint16_t bpm = (uint16_t)(b[o] | b[o + 1] << 8);
             c->bpm = bpm >= QD_BPM_MIN && bpm <= QD_BPM_MAX ? bpm : 0;
             c->follow = b[o + 2] < QD_NFOLLOW ? b[o + 2] : QD_FOLLOW_NONE;
@@ -655,6 +672,7 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
             pr->song[t][0] = b[o] <= QD_NSCENE ? b[o] : 0;
             pr->song[t][1] = b[o + 1] >= 1 && b[o + 1] <= 16 ? b[o + 1] : 1;
         }
+    }
     }
     return 1;
 }
@@ -673,6 +691,9 @@ static uint32_t ser_set(const qd_app_t *a, uint8_t *b)
     b[o++] = (uint8_t)((a->ui.boost ? 0x80 : 0) | (a->ui.clk_out ? 0 : 0x40) | (a->ui.cc_out ? 0 : 0x20) |
 #if QD_STORE_BLE
                        (a->per.set_ble_off ? 0x10 : 0) |   /* (the .rfm1: a unit's BLUETOOTH OFF kept for its restore) */
+#endif
+#if !QD_STORE_BLE
+                       (!a->ui.clk_in ? 0x10 : 0) |   /* (the Move: bit 4 CLOCK IN off) */
 #endif
                        (a->ui.voice_mode == QD_VOICE_OFF ? 0x08 : 0) | (a->ui.voice_mode == QD_VOICE_ALWAYS ? 0x04 : 0));
                                                         /* (EvilGenius: bit 3 THE VOICE off, bit 2 always; neither:
@@ -718,6 +739,9 @@ static int de_set(const uint8_t *b, uint32_t len, int *proj, int *pat, int *sel,
     a->ui.follow = b[7] != 0;
     a->ui.boost = (b[5] & 0x80u) != 0;
     a->ui.clk_out = !(b[5] & 0x40u), a->ui.cc_out = !(b[5] & 0x20u);
+#if !QD_STORE_BLE && !QD_PKG_BLE
+    a->ui.clk_in = !(b[5] & 0x10u);                     /* (the Move: CLOCK IN) */
+#endif
     a->ui.voice_mode = (uint8_t)(b[5] & 0x08u ? QD_VOICE_OFF : b[5] & 0x04u ? QD_VOICE_ALWAYS : QD_VOICE_STOPPED);
 #if QD_PKG_BLE
     a->ui.ble_off = (b[5] & 0x10u) != 0;                /* (bit 4: 0 in every record before it, and the USB package's:
@@ -1632,7 +1656,9 @@ void qd_proj_colour(qd_app_t *a, int p, int colour)
     ps->pcol[p] = (uint8_t)colour;
     if (ps->on && p != ps->proj && ps->pexists[p]) {    /* (another project: its header now) */
         const int len = qd_store_get(&ps->prj_st, QD_RKEY(QD_RK_HDR, p, 0), pr_buf, sizeof pr_buf);
-        if (len == (int)HDR_FULL) {
+        int col;
+        hdr_nscene((uint32_t)len, &col);
+        if (len > 0 && col) {
             pr_buf[len - 1] = (uint8_t)colour;
             put_now(&ps->prj_st, QD_RKEY(QD_RK_HDR, p, 0), pr_buf, (uint32_t)len);
         }

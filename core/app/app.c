@@ -249,6 +249,9 @@ static void midi_play(qd_app_t *a, int status, int d1, int d2)
 {
     const int ch = status & 15, kind = status & 0xF0;
     int m, t;
+    if (!a->ui.clk_in && ((status & 0xFF) == 0xF8 || (status & 0xFF) == 0xFA || (status & 0xFF) == 0xFB ||
+                          (status & 0xFF) == 0xFC))
+        return;                                         /* (the Move: CLOCK IN off: a clock and its transport ignored) */
     switch (status & 0xFF) {
     case 0xF8:
         qd_seq_midi_clock(&a->seq);

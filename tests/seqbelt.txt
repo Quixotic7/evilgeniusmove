@@ -1,0 +1,41 @@
+# Sequence's page belt: the wheel at home opens it; a press enters; in a page the wheel its subpages; Back: the belt,
+# again: home
+tap 85                   # out of the title
+wait 300
+cc 14 1                  # the wheel: the belt (OSC), on to SPEECH
+wait 30
+cc 14 1
+wait 300
+state belt-speech
+shot 01-belt
+cc 3 127                 # pressed: SPEECH (WORD)
+cc 3 0
+wait 300
+state speech
+cc 14 1                  # the wheel: SAY (the page's own)
+wait 300
+state say
+cc 51 127                # Back: the belt on SPEECH; the wheel to FX; pressed
+cc 51 0
+wait 100
+state back-belt
+cc 14 1
+wait 30
+cc 14 1
+wait 30
+cc 14 1
+wait 30
+cc 14 1
+wait 100
+cc 3 127
+cc 3 0
+wait 300
+state fx
+cc 51 127                # Back: the belt on FX; Back: home
+cc 51 0
+wait 100
+state back-belt-fx
+cc 51 127
+cc 51 0
+wait 300
+state home

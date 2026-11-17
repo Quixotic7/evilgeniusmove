@@ -584,6 +584,29 @@ compiles.
   Shift + Copy in CLIPS: the scene into the next empty one. *Left as decided:* Shift + Loop stays the scene page,
   Shift + Play in Session stops every clip, Shift + Delete clears the track (twice). The sound-lock layout waits for
   the sound-lock keys. Tests: `tests/shortcuts.txt`, `shortcuts2.txt`.
+- **The rest of the design (17 November 2026):**
+  - **Sequence's page belt** (the board's item 35, its icons from its frames; FX's is Session's, TOOLS a wrench drawn
+    here): the wheel at home opens it, a press enters (PRESET the browser; TRIG .. LFO the TRIG / SOUND pad's page last
+    chosen; FX; TOOLS); in a sound page the wheel turns that page's own subpages; Back from a page comes up to the belt,
+    again home. Left / Right keep the step pages.
+  - **The TRIG page** is pad 1's first: the eight step values as at home (the core is shown no page for the turn, so
+    a held step's own and else the track's defaults), then VOICING, AMP.
+  - **SOUND LOCKS**, the fourth pad layout: the pool's sounds on the note rows (from the top left), played at the
+    track's root with their own patch (the core's `qd_player_key_on_p`); a step held (or just pressed) + a pad locks
+    that sound on it, turning an empty step on, its release no tap. *Not yet: a pad's own pool sound by Shift + wheel.*
+  - **Copy / Delete + a step in CLIPS** copy or cut a scene (every track's part and its settings), as the design.
+  - **COUNT-IN** (SEQ > TIME, 1-4 bars): recording armed and stopped, PLAY clicks the bars first (perform.c, sample
+    exact, the bar's first beat higher) and then plays. *It is not saved yet.* **CLK IN** (SEQ > CLOCK): off, a
+    MIDI clock and its START / STOP / CONTINUE are ignored (the core, `qd_ui_t.clk_in`, saved in the settings record).
+  - Tests: `tests/seqbelt.txt`, `trigpage.txt`, `soundlocks.txt`, `scenecopy.txt`, `countin.txt`.
+  - **64 scenes** (four banks of 16, as decided for banks B-D): Session's slots go to 64; the steps in SCENES,
+    ARRANGE, SEQ and Copy / Delete + step are the bank shown (SCENES': the edited scene's); Shift + Left / Right in
+    CLIPS a bank on or back. A header record written with 16 scenes still reads (its scenes count from its length).
+  - **The FM-1 converter** (`tools/fm1import`, README "FM-1 projects"): `fm1dump` reads a backup with the FM-1's own
+    core (built from an FM-1 checkout at its sizes and its store: nothing of it in this repository), `fm1load` writes
+    the projects into a Move store with this core; `convert.sh --unit` does it on the Move with its store kept first.
+    Checked on the owner's FM-1 0.1.4 backups: two projects each, every pattern, step, lock, sound and the pool came
+    across, the Move's own project 1 untouched.
   - **MIDI FX** is drawn for this screen (the core's page cropped showed its top only); the selected slot tapped
     again keeps its page (the wheel turns pages), so two taps only bypass.
   - **PROJECTS** (Shift + step 1) is the design's: 32 projects on the pads (the core now keeps 32 on the Move: the
@@ -598,7 +621,7 @@ compiles.
 
 **Not built yet:**
 
-1. **Sequence's page belt**, the sound-lock keys (and their pad layout), the Trig page on pad 1.
+(Everything in the design is built; what is left is listed under the open questions and the unit's checks.)
 
 **17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
 evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this

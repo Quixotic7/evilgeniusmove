@@ -84,6 +84,9 @@ $(B)/%.o: src/%.c $(wildcard src/*.h) $(CORE_DEPS) | $(B)
 	$(CC) $(OPT) -std=gnu11 -Wall -Wextra $(INC) $(DEFS) -c $< -o $@
 
 # the core's own checks at the Move's sizes (core/tests/test_app.c: the app, the sequencer, clips), with the sanitizers
+print-core-src:                       # (the core's sources, for tools/fm1import's fm1load)
+	@echo $(CORE_SRC)
+
 core-test: build/core/test_app
 	build/core/test_app
 build/core/test_app: core/tests/test_app.c $(CORE_SRC) $(SAM_SRC) $(PVG_SRC) $(wildcard core/*/*.h core/*/*.c) Makefile

@@ -172,6 +172,7 @@ void qd_ctl_init(qd_app_t *a)
     u->view = u->hview = QD_VIEW_EDIT;   /* P1.5s (the owner: "this home screen should be the default one") */
     u->follow = 1;
     u->clk_out = u->cc_out = 1;        /* (FIZZ MIDI (c)) */
+    u->clk_in = 1;
     u->lmode = QD_LMODE_MODES;         /* (the owner, 2026-10-25: MODES the default; a saved setting overrides) */
     u->hmode = UI_F_NOTE;
     u->tk = QD_TK_NONE;

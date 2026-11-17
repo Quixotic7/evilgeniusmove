@@ -481,6 +481,7 @@ typedef struct {
     int boost;                         /* 2026-10-26 (the owner: the engine clipped): SETTINGS' BOOST: the tracks at their
                                         * old level (+6 dB); off (the default): 6 dB under it, the engine's headroom */
     uint8_t clk_out, cc_out;           /* FIZZ MIDI (c): SETTINGS' CLOCK OUT and CC OUT (on at power-on) */
+    uint8_t clk_in;                    /* the Move's SEQ > CLOCK: an incoming MIDI clock followed (on at power-on) */
     uint8_t set_page;                  /* SETTINGS' page, SELECT (2026-11-10: 0, 1 HOME; the USB package: 2 USB HOST;
                                         * the Bluetooth package: 2 BLUETOOTH) */
 #if QD_USB_HOST
