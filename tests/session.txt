@@ -1,0 +1,103 @@
+# Session (clip workflow stage 3): each track's clips launched on their own, scenes, the stop / mute steps, copy / cut
+tap 85                   # out of the title
+wait 300
+tap 85                   # PLAY
+wait 500
+state start
+cc 50 127                # Menu: Session, CLIPS
+cc 50 0
+wait 100
+state session
+shot 01-clips
+note 84 100              # track 1, slot 2: launched (queued to the bar)
+wait 30
+note 84 0
+wait 100
+state t1-queued
+shot 02-queued
+wait 2200
+state t1-slot2
+note 93 100              # track 2, slot 1, two taps: track 2 stopped (at the bar)
+wait 30
+note 93 0
+wait 100
+note 93 100
+wait 30
+note 93 0
+wait 100
+state t2-stopping
+wait 2200
+state t2-stopped
+shot 03-stopped
+cc 49 127                # Shift + a pad on row 3: scene 3
+note 76 100
+wait 30
+note 76 0
+cc 49 0
+wait 100
+state scene3-queued
+wait 2200
+state scene3
+note 19 100              # step 4: track 2 muted
+wait 30
+note 19 0
+wait 100
+state t2-muted
+note 19 100
+wait 30
+note 19 0
+cc 60 127                # Copy held: track 1's slot 3, then track 7's slot 4 (empty)
+note 76 100
+wait 30
+note 76 0
+note 74 100
+wait 30
+note 74 0
+cc 60 0
+wait 100
+state copied
+cc 119 127               # Delete held: track 7's slot 4 cut, then pasted into track 8's slot 4
+note 74 100
+wait 30
+note 74 0
+wait 100
+state cut
+note 75 100
+wait 30
+note 75 0
+cc 119 0
+wait 100
+state pasted
+cc 63 127                # Right: slots 5-8
+cc 63 0
+wait 100
+state right
+cc 62 127                # Left twice: back to slots 1-4
+cc 62 0
+cc 62 127
+cc 62 0
+wait 100
+state left
+note 74 100              # track 7, slot 4 (empty again): chosen; edited in Sequence
+wait 30
+note 74 0
+wait 100
+state empty
+shot 05-empty
+cc 50 127                # Menu: Sequence
+cc 50 0
+wait 100
+note 16 100              # a step on track 7's empty clip: it plays
+wait 30
+note 16 0
+wait 2500
+state new-clip
+cc 50 127                # Session again; Shift + Play: every clip stopped at the bar
+cc 50 0
+cc 49 127
+cc 85 127
+cc 85 0
+cc 49 0
+wait 2500
+state all-stopped
+shot 04-all-stopped

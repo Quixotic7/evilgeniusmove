@@ -15,7 +15,13 @@ the test hook (below); the LED colours and the sound itself have only been judge
 
 The clip workflow (`design/WORKFLOW.md`) is being built in stages. Stage 1 (Sequence's four modes on the track
 buttons, their top rows, Mute held, the hold shortcuts) is in; `tests/modes.txt` exercises it. Stage 2 (8 tracks, 16
-pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it.
+pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it. Stage 3 (clips and Session's CLIPS: each
+track's clips launched and stopped on their own, scenes) is in; `tests/session.txt` exercises it.
+
+A clip is a pattern's part of one track: slot k of a track is pattern A(k+1)'s part, so a pattern is a scene. The core
+plays each track's clip on its own (`QD_CLIPS`, on in the host profile the Move builds; the FM-1 leaves it out). The
+sound stays with the track, as on Move: launching a clip, or editing one, carries the track's sound into it (the demo
+patterns' own sounds give way to the track's once they are played or edited).
 
 The Move builds the core with `-DQD_TRACKS=8 -DQD_NSTEP=256` (the FM-1 keeps 6 tracks and 8 pages). The projects store
 of other sizes is not read: **the first launch of this build on a unit erases the saved projects** (MY PRESETS are
@@ -88,9 +94,16 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Top row in TOOLS | the core's TOOLS keys |
 | Shift + a top pad, in SOUND | shake the page's values (the dice) |
 | Power button | a menu: CANCEL / POWEROFF |
-| Menu / Back | home (again: the next home view) / out of whatever page is open |
+| Menu | Sequence <-> Session. Shift + Menu: the core's HOME (again: the next home view) |
+| Back | out of whatever page is open |
+| Track 1-4, in Session | Session's modes: 1 CLIPS, 2 MIDI FX (the core's page), 3 FX, 4 MIX |
+| Pads, in CLIPS | 8 tracks (columns) x 4 clip slots (rows, of 16). Tap: the clip launched at the next bar (stopped: at once); an empty slot: chosen (the clip edited in Sequence; a step put there launches it) and the track stopped. Two taps: the track stopped. Shift + a pad: that row's scene (an empty slot stops its track). Green: playing; blinking: queued or stopping; the track's colour: a clip; white: the clip edited |
+| Steps, in CLIPS | two under each track: the first stops it (at the bar), the second mutes it (Shift: solo) |
+| Copy / Delete held + a clip, in CLIPS | copied, then pasted where tapped / cut, then pasted where tapped (released first: deleted) |
+| - / +, Left / Right, the wheel, in CLIPS | the slots shown a row / 4 rows / a row a detent; Left twice: the first four |
+| Shift + Play, in Session | every clip stopped at the next bar, the transport running |
 | Record | arm recording from the pads (stopped: starts with the first note); again: off |
-| Loop | page mode: tapped, on (again: off); held, while held. Shift + Loop held: the step buttons choose the pattern, top pads 1-4 the bank (until Session) |
+| Loop | page mode: tapped, on (again: off); held, while held. Shift + Loop held: the step buttons launch a pattern's clips on every track (a scene), top pads 1-4 the bank |
 | A page step, in page mode | tap: the page shown; held: out of the loop / back in; two taps: that page alone (again: the loop back); one held and another tapped: the loop from one to the other. White shown, green playing, blue in the loop |
 | Pad rows 3-4, in page mode | the shown page's 16 steps: tap its start, two taps its end, one held and another tapped both |
 | Copy / Delete held + a page step | the page copied, then pasted where tapped / the page cleared |

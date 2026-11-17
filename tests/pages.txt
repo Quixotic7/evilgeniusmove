@@ -106,7 +106,7 @@ shot 21-word
 cc 71 8
 wait 900
 shot 22-word-turned
-tap 50
+tap 51                   # Back: home
 wait 200
 note 20 100              # step 5 held: slide
 wait 300

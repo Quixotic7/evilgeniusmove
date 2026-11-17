@@ -57,6 +57,11 @@ void scr_fx(mono_t *m, int kind, const int *v, uint32_t ms);
 void scr_lfo(mono_t *m, int shape, int speed, int depth, uint32_t ms);
 /* a voice's word: n 4-bit samples, two a byte, the high nibble first; its start and end 0..1000 (< 0 none) */
 void scr_word(mono_t *m, const uint8_t *nib, uint32_t n, int start, int end);
+/* Session's CLIPS: four rows of slots (first: the first one's number) under eight tracks; a clip outlined, playing
+ * solid with a play mark, queued and stopping blinking; the selected one (col, row; row out of 0..3: none) ringed */
+enum { SCR_CL_EMPTY, SCR_CL_CLIP, SCR_CL_PLAYING, SCR_CL_QUEUED, SCR_CL_STOPPING };
+void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_col, int sel_row, const char *title,
+                 uint32_t ms);
 /* a short menu: three rows shown, the chosen one a solid bar */
 void scr_menu(mono_t *m, const char *const *items, int n, int sel);
 

@@ -431,14 +431,54 @@ compiles.
     - Copy / Delete held with a page copies, pastes or clears it;
     - the screen shows the pages strip.
 
+**Stage 3, clips and Session's CLIPS, in the core and the Move layer.** Checked in the simulator with
+`tests/session.txt` (and the five older scripts), and in the core's `test_app` (`t_clips`, 9 checks). The Move build
+compiles.
+
+- **The model, simpler than "What the core needs" proposed:** a clip is a pattern's part of one track. Slot k of
+  track t is pattern k's track t, so 16 slots are A01-A16 and a pattern is a scene. Nothing in the store changes, and
+  today's patterns are already clips (no conversion).
+- **The core (`seq/seq.c`):** `QD_CLIPS` (on in the host profile, which the Move builds; off on the FM-1, which keeps
+  its RAM) lets each track's cursor play its own pattern.
+  - `qd_seq_launch(t, pat, launch)` queues a clip: NOW, BEAT, BAR from PLAY, or END, the end of the track's own loop.
+  - `qd_seq_stop_track(t, launch)` silences the track from that tick; its cursor runs on.
+  - With the transport stopped, both take effect at once, and PLAY starts each track's clip.
+  - `qd_seq_select_at` launches every track's part of a pattern (a scene).
+  - `seq.cur` is then only the pattern edited.
+  - The FM-1's budget: 40 bytes of RAM. Its `budget-ratchet` failure (stack_audio 3432 > 3032) is the same before the
+    change.
+- **The Move layer:**
+  - **Menu** switches Sequence and Session (Shift + Menu is the core's HOME).
+  - **Track buttons in Session:** CLIPS, MIDI FX (the core's page), FX, MIX.
+  - **CLIPS:**
+    - the pads are 8 tracks x 4 slots: tap launches at the next bar, two taps stop the track, Shift + a pad launches
+      the row's scene (an empty slot stops its track);
+    - an empty slot tapped is chosen and its track stopped; it is edited in Sequence, and a step put there launches
+      it;
+    - the steps are stop / mute pairs (Shift: solo);
+    - Plus / Minus, Left / Right (twice: the top) and the wheel move the rows;
+    - Copy or Delete held + a clip copies or cuts it, then pastes it where tapped;
+    - Shift + Play stops every clip at the bar.
+  - **The LEDs:** a clip in its track's colour, playing green, queued or stopping blinking, the clip edited white.
+  - **The screen:** the four rows as boxes (solid with a play mark: playing), the clip edited ringed, the track's
+    name and clip number on top.
+  - **The edited pattern follows the selected track's clip** (the slot chosen, else the one queued, else the one
+    playing).
+  - **The sound stays with the track:** the edited clip's sounds are carried into each track's playing and queued
+    clip, and into a clip as it comes to be edited.
+  - **Shift + Loop's pattern page** now launches a scene; its screen shows the selected track's clip and the one
+    queued.
+- **Left for later in Session:** the launch quantize as a setting (`LAUNCH Q`, now always 1 bar), `EMPTY SLOT`, the
+  MIX page's pad columns (button 4 opens today's MIX), MIDI FX's own top row (button 2 opens the core's page), Copy
+  tapped alone (duplicate), New Clip and Double Loop on Shift + steps 14 / 15, undo for clip copy and cut, and saving
+  which clip each track plays (a project opens with every track on its current pattern).
+
 **Not built yet** (each needs the core, which is shared with the FM-1 firmware):
 
-1. **Clips and Session:** per-track clips, 16 slots, launch quantize, scenes. Then Session's four modes: CLIPS,
-   MIDI FX, FX on the mix, MIX.
-2. **PERFORM:** throws, beat repeat, filter sweeps, tape.
-3. **Mod mapping:** a modulation matrix for ENV and LFO.
-4. **SCENES and ARRANGE.**
-5. **The page belt on the wheel**, the sound-lock keys, the Trig page on pad 1.
+1. **PERFORM:** throws, beat repeat, filter sweeps, tape.
+2. **Mod mapping:** a modulation matrix for ENV and LFO.
+3. **SCENES and ARRANGE.**
+4. **The page belt on the wheel**, the sound-lock keys, the Trig page on pad 1.
 
 ## Open questions for the user
 

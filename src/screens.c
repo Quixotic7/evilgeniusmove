@@ -695,3 +695,35 @@ void scr_pages(mono_t *m, const char *name, const char *value, int npage, unsign
             mono_rect(m, x + 1, 47, 4, 2, 1);
     }
 }
+
+/* ------------------------------------------------------------------ Session's clips --- */
+void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_col, int sel_row, const char *title,
+                 uint32_t ms)
+{
+    const int blink = (int)((ms / 250u) & 1u);
+    char rows[28];
+    int r, c, k;
+    mono_clear(m);
+    mono_text(m, 1, 1, title, MONO_FS, 1, 1);
+    snprintf(rows, sizeof rows, "%d-%d", first + 1, first + 4);
+    mono_text(m, MONO_W - 1 - mono_text_w(rows, MONO_FS, 1), 1, rows, MONO_FS, 1, 1);
+    for (r = 0; r < 4; r++)
+        for (c = 0; c < n && c < 8; c++) {
+            const int x = c * 16 + 1, y = 11 + r * 13, w = 14, h = 11, st = cell[r][c];
+            const int solid = st == SCR_CL_PLAYING || ((st == SCR_CL_QUEUED || st == SCR_CL_STOPPING) && blink);
+            if (st == SCR_CL_EMPTY)
+                mono_pset(m, x + 7, y + 5, 1);
+            else if (solid) {
+                mono_rect(m, x, y, w, h, 1);
+                if (st != SCR_CL_STOPPING)
+                    for (k = 0; k < 7; k++)             /* the play mark */
+                        mono_rect(m, x + 5, y + 2 + k, k < 4 ? k + 1 : 7 - k, 1, 0);
+            } else
+                mono_box(m, x, y, w, h, 1);
+            if (c == sel_col && r == sel_row) {
+                mono_box(m, x - 1, y - 1, w + 2, h + 2, 1);
+                if (solid)
+                    mono_box(m, x, y, w, h, 0);
+            }
+        }
+}
