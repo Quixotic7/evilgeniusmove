@@ -909,6 +909,12 @@ void scr_mfx(mono_t *m, int g, int track, const uint8_t *type, const uint8_t *by
         }
     }
     mono_dots_h(m, 0, 33, 128, 2);
+    if (!(type[sel & 7] < 11 ? type[sel & 7] : 0)) {    /* an empty slot: how to fill it */
+        mono_text(m, 1, 38, "KNOB 1: AN EFFECT", MONO_FS, 1, 1);
+        mono_text(m, 1, 48, "PAD + WHEEL: MOVE", MONO_FS, 1, 1);
+        mono_text(m, 1, 56, "KNOB 6: THE GROUP", MONO_FS, 1, 1);
+        return;
+    }
     for (i = 0; i < 4; i++) {                           /* the foot: knobs 1-4 */
         const int x = i * 32 + 1;
         if (!has[i] || !lab[i])

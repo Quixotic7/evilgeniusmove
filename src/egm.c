@@ -257,7 +257,8 @@ static struct {
     uint8_t mxg_pres[8];               /* .. as fast as the pad is pressed (its velocity, then its aftertouch) */
     float mxg_v[8];
     uint32_t mxg_ms;
-    int mfx_pad, mfx_dbl;              /* the MIDI FX page: a slot pad held (-1 none); a double tap's release to eat */
+    int mfx_pad, mfx_dbl;
+    uint32_t mfx_k1_ms;                /* MIDI FX: knob 1 last chose an effect then */              /* the MIDI FX page: a slot pad held (-1 none); a double tap's release to eat */
     uint32_t mfx_tap_ms[8];            /* .. each slot pad's last tap (two: the slot bypassed) */
     uint32_t mx_tap_ms[24];            /* .. each column pad's last tap (two: the default) */
     int undo_cur;                      /* (a clip operation's level: the pattern edited before it) */
@@ -1029,6 +1030,30 @@ static void tsound_sync(int k, int t, const qd_pattern_t *E)   /* pattern k's so
     P = qd_proj_pat(&A.proj, k);
     if (memcmp(&P->snd[t], &E->snd[t], sizeof P->snd[t]))
         P->snd[t] = E->snd[t];
+    if (P->trk[t].mfx != E->trk[t].mfx)                 /* (the MIDI FX group too: the track's, not a clip's) */
+        P->trk[t].mfx = E->trk[t].mfx;
+}
+
+/* MIDI FX opened on a track with no group: the first group no track uses is its own (else the first) */
+static void mfx_auto_group(void)
+{
+    qd_pattern_t *P = qd_ctl_pat(&A);
+    unsigned used = 0;
+    int t, g = 1;
+    if (A.sel >= QD_TRACKS || qd_mfx_tgroup(&A))
+        return;
+    for (t = 0; t < QD_TRACKS; t++)
+        used |= 1u << (P->trk[t].mfx & 0x7f);
+    while (g <= QD_MFX_NGROUP && (used >> g & 1u))
+        g++;
+    if (g > QD_MFX_NGROUP)
+        g = 1;
+    P->trk[A.sel].mfx = (uint8_t)g;
+    {
+        char v[32];
+        snprintf(v, sizeof v, "T%d: GROUP %d", A.sel + 1, g);
+        show_name(v);
+    }
 }
 
 /* each look: the clips on in the core's sequencer; a chosen empty slot given a trig plays; the pattern edited is the
@@ -1578,6 +1603,7 @@ static void sess_button(int n, int down)
         seq_go(SQ_FX);
     else if (n == SN_MFX && !(S.mode == MV_CORE && S.scr == QD_SCR_MFX)) {
         seq_go(SQ_TRACKS);
+        mfx_auto_group();
         tap(B_ARP);
     } else if (n == SN_MIX)                             /* (the Move's own: the core at home) */
         seq_go(SQ_TRACKS);
@@ -1838,6 +1864,21 @@ static void pj_knob(int i, int d);
 static void knob(int i, int delta)
 {
     const int d = detents(i, delta, KNOB_DIV);
+    if (d && i == 0 && S.mode == MV_CORE && S.scr == QD_SCR_MFX && S.mfx_pad < 0 && !S.over) {
+        /* MIDI FX: knob 1 on an empty slot chooses its effect (as the slot held + knob 1), and goes on choosing while it
+         * turns (a second's pause: the effect's own first value again) */
+        const int g = qd_mfx_tgroup(&A), sl = A.ui.mfx_slot & 7;
+        if (g && (A.proj.mfx[g - 1].slot[sl].type == QD_MFX_NONE || (S.mfx_k1_ms && S.now - S.mfx_k1_ms < 1000u))) {
+            const int pg = A.ui.mfx_page;
+            qd_app_key(&A, QD_BLACK_KEY[sl], 1, STEP_VEL);
+            qd_app_knob(&A, QD_K_1, d);
+            qd_app_key(&A, QD_BLACK_KEY[sl], 0, 0);
+            A.ui.mfx_page = pg;
+            S.mfx_k1_ms = S.now ? S.now : 1;
+            S.last_knob = 0, S.turn_ms = S.now ? S.now : 1;
+            return;
+        }
+    }
     S.touch_turned = 1;
     S.last_knob = i;
     S.turn_ms = S.now ? S.now : 1;
@@ -2166,6 +2207,8 @@ static void pj_knob(int i, int d)
 /* Shift + a step: the Move's shortcut there */
 static void shift_step(int i)
 {
+    if (SHIFT_STEP[i] == SS_MIDIFX)
+        mfx_auto_group();
     switch (SHIFT_STEP[i]) {
     case SS_SETUP: S.over = S.over == OV_SETUP ? OV_NONE : OV_SETUP; S.menu_sel = 0; break;
     case SS_TEMPO: S.over = S.over == OV_TEMPO ? OV_NONE : OV_TEMPO; break;

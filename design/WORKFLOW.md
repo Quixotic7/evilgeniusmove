@@ -565,6 +565,15 @@ compiles.
   height; the wheel does nothing in MIX (it opened the belt, which took MIX away) and Back returns to CLIPS. The belt
   opens from CLIPS only. The idle screen (the laughing brain) wakes at any pad, step or button press, which does nothing
   else (its release swallowed too); turns and touches leave it be. Tests: `tests/wake.txt`, `wake-button.txt`.
+- **From the unit, round 4 (17 November 2026):**
+  - **The endless echo:** ECHO's feedback went to 0.95, its lo-fi crush in the loop: at the top of the knob the
+    repeats rang for half a minute and more. Now to 0.85 (a long tail that dies in about 12 s at the top), the crush
+    rounds toward zero, and the last whisper of a repeat is let go.
+  - **MIDI FX:** the group was a clip's (each pattern's track settings), so a group set in one clip was not the
+    track's in the others: it now follows the track as its sound does. A track with no group gets the first free one
+    when MIDI FX opens; knob 6 changes it. Knob 1 on an empty slot picks its effect (no slot held), turning on through
+    the effects; the empty slot's screen says so. Test: `tests/midifx2.txt`.
+  - **Sound locks:** the demo's locked drums stay as they are (a new project to play in).
   - **MIDI FX** is drawn for this screen (the core's page cropped showed its top only); the selected slot tapped
     again keeps its page (the wheel turns pages), so two taps only bypass.
   - **PROJECTS** (Shift + step 1) is the design's: 32 projects on the pads (the core now keeps 32 on the Move: the

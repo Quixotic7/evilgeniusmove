@@ -238,7 +238,9 @@ static uint32_t echo_len(int side)
 }
 static void echo(const int32_t *in, int32_t *l, int32_t *r)
 {
-    const int32_t fb = P[QD_FXP_DFDBK] * 245;                         /* Q15: to 0.95 */
+    const int32_t fb = P[QD_FXP_DFDBK] * 219;                         /* Q15: to 0.85 (the Move, 2026-11-17: 0.95
+                                                         * with the lo-fi's crush rang on for half a minute: endless,
+                                                         * stopped; 0.85 still a long dub tail that dies) */
     const int lofi = P[QD_FXP_DTONE];
     const int32_t lpk = 32767 - lofi * 220;                          /* the repeats' low-pass (Q15) */
     const int bits = 16 - lofi * 9 / 127;                            /* .. their bits (16 .. 7) */
@@ -260,11 +262,16 @@ static void echo(const int32_t *in, int32_t *l, int32_t *r)
         }
         if (++ec_cnt >= hold) {                                      /* LOFI: the repeats coarser */
             ec_cnt = 0;
-            for (s = 0; s < 2; s++)
-                ec_hold[s] = bits < 16 ? (y[s] >> (16 - bits)) << (16 - bits) : y[s];
+            for (s = 0; s < 2; s++) {                                /* (toward zero: a shift's floor kept a
+                                                         * bias the feedback went round with for ever) */
+                const int32_t sh = 16 - bits, a = y[s] < 0 ? -y[s] : y[s], q = bits < 16 ? (a >> sh) << sh : a;
+                ec_hold[s] = y[s] < 0 ? -q : q;
+            }
         }
         for (s = 0; s < 2; s++) {
-            const int32_t back = (int32_t)(((int64_t)ec_hold[s ^ (ping ? 1 : 0)] * fb) >> 15);
+            int32_t back = (int32_t)(((int64_t)ec_hold[s ^ (ping ? 1 : 0)] * fb) >> 15);
+            if (back > -24 && back < 24)                             /* (the last whisper let go: a tail ends) */
+                back = 0;
             const int32_t inp = ping ? (s ? 0 : x) : x;
             ec_buf[s][ec_w % EC_LEN] = c8_put(sat16((inp + back) >> 1));
         }

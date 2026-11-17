@@ -1,0 +1,25 @@
+# MIDI FX without gestures: opened on a track with no group, it gets one; knob 1 on an empty slot picks its effect
+# (turning on: the next effects); knob 6: the group
+tap 85                   # out of the title
+wait 300
+cc 49 127                # Shift + step 11: MIDI FX (Sequence)
+note 26 100
+note 26 0
+cc 49 0
+wait 300
+state opened
+shot 01-empty
+cc 71 4                  # knob 1: ARP; again: CHANCE
+wait 100
+state arp
+cc 71 4
+wait 100
+state chance
+wait 1500
+cc 71 4                  # (a pause: knob 1 the effect's own value now)
+wait 100
+state value
+shot 02-chance
+cc 76 4                  # knob 6: the next group
+wait 300
+state group2
