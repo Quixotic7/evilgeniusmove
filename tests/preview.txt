@@ -1,0 +1,31 @@
+# Page mode's row 2: a page's trigs, two steps a pad (the page held, else playing, else shown)
+tap 85                   # out of the title
+wait 300
+note 16 100              # steps 1, 2 and 5 of track 1 on
+wait 30
+note 16 0
+note 17 100
+wait 30
+note 17 0
+note 20 100
+wait 30
+note 20 0
+wait 100
+tap 58                   # Loop tapped: page mode
+wait 100
+state shown              # page 1: pad 1 both (colour), pad 3 one (dim)
+cc 14 1                  # the wheel: a page longer
+wait 100
+note 17 100              # page 2 held: its row (empty)
+wait 100
+state held
+note 17 0
+wait 600
+tap 85                   # PLAY: the play head white
+wait 40
+state playing
+tap 85
+wait 100
+tap 58                   # page mode off
+wait 100
+state off

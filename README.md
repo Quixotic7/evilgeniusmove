@@ -114,6 +114,7 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Loop | page mode: tapped, on (again: off); held, while held. Shift + Loop held: the step buttons launch a pattern's clips on every track (a scene), top pads 1-4 the bank |
 | A page step, in page mode | tap: the page shown; held: out of the loop / back in; two taps: that page alone (again: the loop back); one held and another tapped: the loop from one to the other. White shown, green playing, blue in the loop |
 | Pad rows 3-4, in page mode | the shown page's 16 steps: tap its start, two taps its end, one held and another tapped both |
+| Pad row 2, in page mode | a page's trigs, two steps a pad (both: the track's colour, one: dim; the play head white): the page step held, else the page playing, else the one shown |
 | Copy / Delete held + a page step | the page copied, then pasted where tapped / the page cleared |
 | Copy (Shift: paste) | the pattern (page mode: see above) |
 | Delete | the core's B11: clear |

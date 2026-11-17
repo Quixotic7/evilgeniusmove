@@ -217,6 +217,7 @@ Loop + step for choosing a pattern goes away; Session does that job.
     length keeps muted pages muted.
   - Pads rows 3-4 are the 16 steps of the page chosen, for its start and end: tap to set the start, double-tap to set
     the end, hold one and tap another for both.
+  - Pad row 2 previews a page's trigs, two steps a pad: the page held, else the page playing, else the one shown.
   - Copy + page, then page: copy a page, using the core's page clipboard. Delete + page: clear it.
 - **Feedback.**
   - Step LEDs in page mode: white for the page shown, green for the page playing, the track colour for pages in the
@@ -492,6 +493,9 @@ compiles.
     selected slot white (bypassed: light grey; empty: grey).
   - Tests: `tests/clips.txt` (EMPTY SLOT both ways), `keep.txt` (EMPTY SLOT kept), `mix.txt` (plays, for the
     meters), `midifx.txt` (the state line's `toprow=`: the top row's colours as sent).
+- **Page mode's pad row 2** previews a page's trigs: 8 pads for 16 steps, so a pad is two steps (both on: the track's
+  colour; one: dim; the play head: white). The page is the page step held, else the page playing, else the one shown.
+  Tapping it does nothing. Test: `tests/preview.txt` (the state line's `row2=`).
 
 **Not built yet:**
 

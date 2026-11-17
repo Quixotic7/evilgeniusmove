@@ -1835,6 +1835,28 @@ static void led_cc(int cc, uint8_t v)
 
 static uint8_t white(int level) { return (uint8_t)(level / 2 < 6 ? 6 : level / 2 > 124 ? 124 : level / 2); }
 
+/* page mode's row 2: a page's 16 steps' trigs, pad j steps 2j and 2j + 1 (both: the track's colour; one: dim; none:
+ * off; the play head's: white). The page: a page step held, else the one playing, else the one shown */
+static int preview_page(void)
+{
+    const int pp = qd_ctl_playing_page(&A, A.sel);
+    return S.pg_held >= 0 ? S.pg_held : pp >= 0 ? pp : A.ui.page[A.sel];
+}
+static uint8_t preview_lit(int j)
+{
+    const qd_pattern_t *P = qd_ctl_cpat(&A);
+    const int t = A.sel, pg = preview_page(), s0 = pg * QD_PAGE + 2 * j, tc = t < 8 ? t : 7;
+    const int ph = qd_seq_clip(&A.seq, t) == A.seq.cur && qd_seq_clip_on(&A.seq, t) ? qd_seq_track_step(&A.seq, t) : -1;
+    int n = 0, k;
+    if (t >= QD_TRACKS || pg >= trk_npage())
+        return C_OFF;
+    if (A.seq.playing && (ph == s0 || ph == s0 + 1))
+        return C_WHITE;
+    for (k = 0; k < 2; k++)
+        n += qd_step_type(P, t, s0 + k) != QD_TRIG_NONE;
+    return (uint8_t)(n == 2 ? TRK_COL[tc] : n ? TRK_DIM[tc] : C_OFF);
+}
+
 static void leds(void)
 {
     qd_leds_t L;
@@ -1899,11 +1921,15 @@ static void leds(void)
         }
         if (i >= 24 && top_row_on())
             continue;
+        if (page_mode() && i >= 16 && i < 24) {         /* row 2: a page's trigs, two steps a pad */
+            led_note(N_PAD0 + i, preview_lit(i - 16));
+            continue;
+        }
         if (page_mode() && i < 24) {                    /* rows 3-4: the page's steps, its start and end white, the
-                                                         * range blue; row 2 dark */
+                                                         * range blue */
             const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
             const int pg = A.ui.page[A.sel], k = i >= 8 ? i - 8 : i + 8;
-            led_note(N_PAD0 + i, (uint8_t)(i >= 16 ? C_OFF : k == ts->pstart[pg] || k == ts->pend[pg] ? C_WHITE
+            led_note(N_PAD0 + i, (uint8_t)(k == ts->pstart[pg] || k == ts->pend[pg] ? C_WHITE
                                            : k > ts->pstart[pg] && k < ts->pend[pg] ? C_BLUE : C_GREY));
             continue;
         }
@@ -2403,6 +2429,9 @@ void egm_describe(char *out, int cap)
                 snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d%s", k ? "," : "",
                          A.proj.mfx[g - 1].slot[k].type, A.proj.mfx[g - 1].slot[k].bypass ? "b" : "");
         }
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " row2=");   /* row 2's colours as sent */
+        for (t = 0; t < 8; t++)
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", S.led_note[N_PAD0 + 16 + t]);
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " toprow=");   /* the top row's colours as sent */
         for (t = 0; t < 8; t++)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", S.led_note[N_PAD0 + 24 + t]);
