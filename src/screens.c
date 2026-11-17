@@ -292,7 +292,7 @@ void scr_mix(mono_t *m, const int *level, const int *mute, const int *meter, int
     int i, y;
     mono_clear(m);
     for (i = 0; i < n; i++) {
-        const int x = 10 + i * 19, cap = 50 - level[i] * 44 / 127;
+        const int x = n > 6 ? 8 + i * 15 : 10 + i * 19, cap = 50 - level[i] * 44 / 127;   /* (eight: closer) */
         char num[2] = { (char)('1' + i), 0 };
         if (mute[i] == 1)
             mono_dots_v(m, x, 4, 49, 2);
@@ -423,8 +423,9 @@ void scr_room(mono_t *m, const scr_room_t *r, uint32_t ms)
 {
     int i;
     mono_clear(m);
-    /* the lift: the tracks, the one you are on solid, a pulse as each plays */
-    mono_dots_v(m, 10, 0, MONO_H, 2);
+    /* the lift: the tracks, the one you are on solid, a pulse as each plays (none: the floor runs the full width) */
+    if (r->ntrack)
+        mono_dots_v(m, 10, 0, MONO_H, 2);
     for (i = 0; i < r->ntrack; i++) {
         const int y = 3 + i * 10;
         if (i == r->sel)
@@ -439,8 +440,21 @@ void scr_room(mono_t *m, const scr_room_t *r, uint32_t ms)
         }
     }
     /* the floor, the notes as platforms, a robot on a step that holds locks */
-    mono_rect(m, 11, SCR_RM_FLOOR, 117, 2, 1);
-    mono_dots_h(m, 11, SCR_RM_FLOOR + 4, 117, 2);
+    {
+        const int x0 = r->ntrack ? 11 : 0;
+        mono_rect(m, x0, SCR_RM_FLOOR, MONO_W - x0, 2, 1);
+        if (r->npage <= 0)
+            mono_dots_h(m, x0, SCR_RM_FLOOR + 4, MONO_W - x0, 2);
+        for (i = 0; i < r->npage && i < 16; i++) {      /* the pages: shown solid, playing blinking, the loop's dotted */
+            const int x = 2 + i * 8;
+            if (i == r->page_shown)
+                mono_rect(m, x, SCR_RM_FLOOR + 4, 6, 2, 1);
+            else if (i == r->page_playing && (ms / 250u) & 1u)
+                mono_rect(m, x, SCR_RM_FLOOR + 4, 6, 1, 1);
+            else if (r->page_loop >> i & 1u)
+                mono_dots_h(m, x, SCR_RM_FLOOR + 4, 6, 2);
+        }
+    }
     for (i = 0; i < 16; i++) {
         const int x = SCR_RM_X(i);
         if (r->col[i].on) {
@@ -653,4 +667,31 @@ void scr_word(mono_t *m, const uint8_t *nib, uint32_t n, int start, int end)
         mono_dots_v(m, start * 127 / 1000, 0, MONO_H, 2);
     if (end >= 0)
         mono_dots_v(m, end * 127 / 1000, 0, MONO_H, 2);
+}
+
+void scr_randomize(mono_t *m, uint32_t ms, int pct)
+{
+    scr_intro(m, ms);
+    mono_rect(m, 0, 56, MONO_W, 8, 0);
+    mono_box(m, 4, 57, 120, 7, 1);
+    mono_rect(m, 4, 57, (pct < 0 ? 0 : pct > 100 ? 100 : pct) * 120 / 100, 7, 1);
+}
+
+void scr_pages(mono_t *m, const char *name, const char *value, int npage, unsigned loop, int shown, int playing, uint32_t ms)
+{
+    int p;
+    scr_knob(m, name, value, -1);
+    for (p = 0; p < 16; p++) {
+        const int x = 4 + p * 7 + p / 4 * 2;
+        if (p >= npage)
+            mono_dots_h(m, x, 59, 6, 2);
+        else if (p == playing && (ms / 250u) & 1u)
+            mono_box(m, x, 51, 6, 9, 1), mono_rect(m, x + 2, 54, 2, 3, 1);
+        else if (!(loop >> p & 1u))
+            mono_box(m, x, 51, 6, 9, 1);
+        else
+            mono_rect(m, x, 51, 6, 9, 1);
+        if (p == shown)
+            mono_rect(m, x + 1, 47, 4, 2, 1);
+    }
 }

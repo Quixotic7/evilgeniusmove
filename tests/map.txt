@@ -3,21 +3,19 @@ state start
 tap 85                  # Play
 wait 200
 state playing
-cc 41 127               # Track 3 pressed and let go
+note 94 100             # top pad 3 (TRACKS' row): track 3
 wait 40
-cc 41 0
+note 94 0
 wait 100
 state track3
-cc 49 127               # Shift + Track 2: track 6
-cc 42 127
+note 97 100             # top pad 6: track 6
 wait 40
-cc 42 0
-cc 49 0
+note 97 0
 wait 100
 state track6
-cc 43 127
+note 92 100
 wait 40
-cc 43 0
+note 92 0
 wait 100
 state track1
 tap 118                 # Sampling: the sound editor
@@ -26,7 +24,9 @@ state sound
 tap 51                  # Back
 wait 100
 state back
-tap 88                  # Mute: the mix
+cc 49 127               # Shift + Mute: the mix (until Session has its MIX)
+tap 88
+cc 49 0
 wait 100
 state mix
 tap 50                  # Menu: home

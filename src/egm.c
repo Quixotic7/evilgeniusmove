@@ -79,6 +79,27 @@ static const char *const POWER_ITEMS[] = { "CANCEL", "POWEROFF" };
 #define RIDE_MS 450u                   /* the lift's ride */
 #define FRAME_MS 33u
 #define PAD_OCT 2                      /* the bottom-left pad: the scale's root in this octave (C3 in C) */
+#define HOLD_MS 400u                   /* a track button down this long: held (its top row while held), not tapped */
+#define DOUBLE_MS 350u                 /* Mute held: two taps on a track pad this close: solo */
+#define RND_MS 1000u                   /* RND PAGE / RND SOUND held this long: shaken */
+enum { SQ_TRACKS, SQ_SOUND, SQ_FX, SQ_TOOLS, SQ_N };
+static const char *const SQ_NAME[SQ_N] = { "TRACKS", "SOUND", "FX", "TOOLS" };
+/* TRIG / SOUND's page pads 1-6: the sound pages each cycles through (SND's indices), the first the default. Pads 7, 8:
+ * RND PAGE and RND SOUND (held a second) */
+static const int8_t SND_PAD[6][4] = {
+    { 0, 1, -1, -1 },                  /* TRIG: AMP (with CRUSH and PORT), VOICE */
+    { 3, 4, 5, 2 },                    /* OSC 1, 2, 3, MOD */
+    { 11, 12, 13, -1 },                /* SPEECH: WORD, SAY, DIGI */
+    { 9, 10, -1, -1 },                 /* FILTER (with its envelope), CHIP */
+    { 6, 7, 8, -1 },                   /* ENV 1, 2, 3 */
+    { 14, 15, 16, -1 },                /* LFO 1, 2, 3 */
+};
+/* the eight sends a held track pad's knobs turn, and the hold popups' ids (knob_info: 20 + one of these) */
+enum { TS_VOL, TS_PAN, TS_CHORUS, TS_ECHO, TS_ROOM, TS_CRUSH, TS_ROBOT, TS_WARP, TS_GLITCH, TS_TV, TS_N };
+static const char *const TS_NAME[TS_N] = { "VOLUME", "PAN", "CHORUS", "ECHO", "ROOM", "CRUSH", "ROBOT", "WARP", "GLITCH", "TV" };
+#define KI_MICRO 10                    /* knob_info's ids past the eight knobs: a held step's micro and velocity .. */
+#define KI_VEL 11
+#define KI_TRACK 20                    /* .. a held track pad's VOLUME .. TV (20 + TS_*) */
 
 /* ------------------------------------------------------------------ the pages --- */
 typedef struct { const char *page; int8_t k; } ent_t;   /* a value: the core's page by name, its knob (4: ALGORITHM) */
@@ -161,7 +182,20 @@ static struct {
     uint32_t home_up_ms;               /* the core's HOME held for it (its settings): let go then (0: not) */
     int shift, vol_touch, quit;        /* quit: 1 back to Move, 2 the power off */
     int mute_down, mute_used;          /* Mute held, and used on a track (its release is then no tap) */
-    int loop_down;                     /* Loop held: the steps are the patterns */
+    int loop_down;                     /* Shift + Loop held: the steps are the patterns (until Session) */
+    /* page mode (Loop tapped: latched; Loop held: while held): the steps are the clip's pages, rows 3-4 the shown
+     * page's start and end, the wheel its length */
+    int loop_btn, page_latch, loop_used;
+    uint32_t loop_ms;
+    int pg_held;                       /* a page step held (-1 none) .. */
+    uint32_t pg_ms, pg_tap_ms[16];     /* .. since then; each page's last tap (a double tap: loop only it) */
+    int pg_used;
+    unsigned pg_solo_restore;          /* the loop before a page was looped alone (0 none) */
+    int pg_copied;                     /* Copy + a page: the page copied (-1 none) */
+    int copy_down, delete_down;
+    int pd_held;                       /* rows 3-4: a step of the page held (-1 none), its last tap .. */
+    uint32_t pd_tap_ms[16];
+    int pd_prev_start;                 /* (the start before a tap: a double tap sets the end, the start kept) */
     int pw_stage;                      /* the power button's SysEx: how far into it .. */
     uint8_t pw_cmd[3], pw_status;      /* .. its report, the last one's bits */
     int knob_acc[10];                  /* knobs 1..8, the wheel, the volume */
@@ -171,7 +205,21 @@ static struct {
     int last_knob;                     /* the knob turned last (0..7) .. */
     uint32_t turn_ms;                  /* .. then; 0: none */
     int oct;                           /* the note pads' octave shift */
-    int8_t pad_note[24];               /* the note each pad struck (-1 up) */
+    int8_t pad_note[32];               /* the note each pad struck (-1 up); 24..31: the top row played as keys */
+    /* Sequence's four modes on the track buttons (design/WORKFLOW.md): 0 TRACKS, 1 TRIG / SOUND, 2 FX, 3 TOOLS. A
+     * button brings its mode's top row; the active one tapped hides it (all four rows keys) until a button is tapped
+     * again; held, its top row only while held */
+    int seq_mode, top_hidden;
+    int tb_down;                       /* the track button held (-1 none) .. */
+    uint32_t tb_ms;                    /* .. since then */
+    int tb_prev_mode, tb_prev_hidden;  /* .. and what was up before it */
+    int tpad;                          /* a track pad held (TRACKS' top row, -1 none): Volume, the wheel, the knobs are its */
+    int tpad_used;
+    uint32_t mute_tap_ms[8];           /* Mute held: each track pad's last tap (a double tap solos) */
+    int8_t grp_last[6];                /* TRIG / SOUND: the page each page pad showed last */
+    int rnd_pad;                       /* RND PAGE (6) / RND SOUND (7) held (-1 none) .. */
+    uint32_t rnd_ms;                   /* .. since then */
+    int rnd_done;
     int win_top;                       /* the core screen's window (MV_CORE): its first logical row */
     int scr;                           /* the core's screen now */
     char name[20];                     /* the name showing .. */
@@ -235,6 +283,39 @@ static void knob_info(int i, kinfo_t *o)
 {
     memset(o, 0, sizeof *o);
     o->frac = -1;
+    if (i >= KI_TRACK && i < KI_TRACK + TS_N && S.tpad >= 0) {   /* a held track pad's level, pan, a send */
+        const qd_mix_track_t *m = &A.model.t[S.tpad].mix;
+        const int k = i - KI_TRACK;
+        int v;
+        snprintf(o->name, sizeof o->name, "T%d %s", S.tpad + 1, TS_NAME[k]);
+        if (k == TS_PAN) {
+            if (m->pan)
+                snprintf(o->val, sizeof o->val, "%c%d", m->pan < 0 ? 'L' : 'R', m->pan < 0 ? -m->pan : m->pan);
+            else
+                snprintf(o->val, sizeof o->val, "C");
+            o->frac = (m->pan + 64) * 1000 / 127;
+        } else {
+            v = k == TS_VOL ? m->level : k == TS_CHORUS ? m->chorus : k == TS_ECHO ? m->delay : k == TS_ROOM ? m->reverb
+              : m->room[k - TS_CRUSH];
+            snprintf(o->val, sizeof o->val, "%d", v);
+            o->frac = v * 1000 / 127;
+        }
+        o->ok = 1;
+        return;
+    }
+    if ((i == KI_MICRO || i == KI_VEL) && A.ui.nheld) {     /* a held step's micro timing (the wheel), velocity (Volume) */
+        qd_rstep_t r;
+        qd_step_resolve(qd_ctl_cpat(&A), A.sel, A.ui.held[0], &r);
+        snprintf(o->name, sizeof o->name, "%s", i == KI_MICRO ? "MICRO" : "VELOCITY");
+        if (i == KI_MICRO)
+            snprintf(o->val, sizeof o->val, "%+d", r.micro);
+        else {
+            snprintf(o->val, sizeof o->val, "%d", r.vel);
+            o->frac = r.vel * 1000 / 127;
+        }
+        o->ok = 1;
+        return;
+    }
     if (i == 8 && S.mode == MV_HOME && A.ui.nheld) {    /* the wheel with Shift, a step held: the step's own sound */
         qd_rstep_t r;
         qd_step_resolve(qd_ctl_cpat(&A), A.sel, A.ui.held[0], &r);
@@ -273,11 +354,11 @@ static void knob_info(int i, kinfo_t *o)
         o->ok = 1;
     } else if (mix_native()) {
         ui_mix_t v;
-        if (i > 6)
+        if (i >= QD_TRACKS && (QD_TRACKS > 6 || i > 6))
             return;
         memset(&v, 0, sizeof v);
         qd_view_mix(&A, &v);
-        if (i < 6) {
+        if (i < QD_TRACKS) {
             snprintf(o->name, sizeof o->name, "TRACK %d", i + 1);
             snprintf(o->val, sizeof o->val, "%d", v.tr[i].level);
             o->frac = v.tr[i].level * 1000 / 127;
@@ -372,19 +453,209 @@ static void snd_go(int spage)
     show_name(SND[spage].name);
 }
 
-/* a group's key: its first page, or its next when the group is already up */
-static void snd_group(int g)
+/* TRIG / SOUND's page pad p (0..5) the page shown is on (-1 none) */
+static int snd_pad_of(int spage)
 {
-    int i, first = -1, next = -1;
-    for (i = 0; i < NSND; i++)
-        if (SND[i].group == g) {
-            if (first < 0)
-                first = i;
-            if (next < 0 && i > S.spage && SND[S.spage].group == g)
-                next = i;
+    int p, j;
+    for (p = 0; p < 6; p++)
+        for (j = 0; j < 4; j++)
+            if (SND_PAD[p][j] == spage)
+                return p;
+    return -1;
+}
+
+/* a page pad: the page it showed last; tapped again while its page is up, its next page (round) */
+static void snd_pad(int p)
+{
+    int j, n = 0;
+    while (n < 4 && SND_PAD[p][n] >= 0)
+        n++;
+    if (snd_pad_of(S.spage) == p) {
+        for (j = 0; j < n && SND_PAD[p][j] != S.spage; j++)
+            ;
+        j = (j + 1) % n;
+    } else
+        for (j = 0; j < n && SND_PAD[p][j] != S.grp_last[p]; j++)
+            ;
+    if (j >= n)
+        j = 0;
+    S.grp_last[p] = SND_PAD[p][j];
+    snd_go(SND_PAD[p][j]);
+}
+
+/* ------------------------------------------------------------------ page mode --- */
+static int page_mode(void) { return (S.page_latch || (S.loop_btn && !S.loop_down)) && (S.mode == MV_HOME || S.mode == MV_SOUND || S.mode == MV_FX); }
+static unsigned trk_loop(void) { unsigned m = qd_ctl_cpat(&A)->trk[A.sel].loop; return m ? m : 1u; }
+static int trk_npage(void)            /* the clip's length in pages: up to its last page in the loop */
+{
+    const unsigned m = trk_loop();
+    int p, n = 1;
+    for (p = 0; p < QD_NPAGE; p++)
+        if (m >> p & 1u)
+            n = p + 1;
+    return n;
+}
+static void set_loop(unsigned m)
+{
+    qd_undo_hint(&A, QD_UK_EDIT);
+    qd_page_set_loop(qd_ctl_pat(&A), A.sel, (int)(m & QD_PMASK_ALL));
+}
+static void page_name(const char *what)
+{
+    char v[20];
+    snprintf(v, sizeof v, "%s %d", what, A.ui.page[A.sel] + 1);
+    show_name(v);
+}
+
+/* a page step: tap shows the page; held (HOLD_MS) its place in the loop toggles (muted / heard); two taps: it loops
+ * alone (again: the loop back); held and another tapped: the loop runs from one to the other. Copy held: the page
+ * copied (then: pasted where tapped); Delete held: the page cleared */
+static void page_step(int i, int down)
+{
+    qd_pattern_t *P = qd_ctl_pat(&A);
+    S.loop_used = 1;
+    if (down) {
+        if (S.copy_down) {
+            qd_undo_hint(&A, QD_UK_PASTE);
+            if (S.pg_copied < 0) {
+                qd_clip_copy_page(&A.ui.clip, P, A.sel, i);
+                S.pg_copied = i;
+                show_name("COPIED");
+            } else {
+                qd_clip_paste_page(&A.ui.clip, P, A.seq.cur, A.sel, i);
+                show_name("PASTED");
+            }
+            return;
         }
-    if (first >= 0)
-        snd_go(SND[S.spage].group == g && next >= 0 ? next : first);
+        if (S.delete_down) {
+            qd_undo_hint(&A, QD_UK_CLEAR);
+            qd_clip_clear_page(&A.ui.clip, P, A.seq.cur, A.sel, i);
+            show_name("CLEARED");
+            return;
+        }
+        if (S.pg_held >= 0 && S.pg_held != i) {         /* a range: from one held page to this one */
+            const int lo = S.pg_held < i ? S.pg_held : i, hi = S.pg_held < i ? i : S.pg_held;
+            set_loop(((1u << (hi + 1)) - 1u) & ~((1u << lo) - 1u));
+            S.pg_used = 1;
+            show_name("LOOP");
+            return;
+        }
+        S.pg_held = i, S.pg_ms = S.now ? S.now : 1, S.pg_used = 0;
+        return;
+    }
+    if (S.pg_held != i)
+        return;
+    S.pg_held = -1;
+    if (S.pg_used)
+        return;
+    if (S.now - S.pg_ms >= HOLD_MS) {                   /* held: out of the loop / back in */
+        unsigned m = trk_loop() ^ (1u << i);
+        set_loop(m ? m : trk_loop());
+        show_name((trk_loop() >> i & 1u) ? "PAGE ON" : "PAGE OFF");
+        return;
+    }
+    if (S.pg_tap_ms[i] && S.now - S.pg_tap_ms[i] < DOUBLE_MS) {   /* two taps: this page alone (again: back) */
+        if (S.pg_solo_restore && trk_loop() == (1u << i)) {
+            set_loop(S.pg_solo_restore);
+            S.pg_solo_restore = 0;
+        } else {
+            S.pg_solo_restore = trk_loop();
+            set_loop(1u << i);
+        }
+        S.pg_tap_ms[i] = 0;
+        return;
+    }
+    S.pg_tap_ms[i] = S.now ? S.now : 1;
+    qd_ctl_set_page(&A, i);                             /* a tap: the page shown (its start and end on rows 3-4) */
+    page_name("PAGE");
+}
+
+/* rows 3-4 in page mode: the shown page's 16 steps (row 3 steps 1-8, row 4 9-16): a tap its start, two taps its end,
+ * one held and another tapped both */
+static void page_pad(int col, int down, int vel);
+static void range_pad(int k, int down)
+{
+    const int pg = A.ui.page[A.sel];
+    const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+    int st = ts->pstart[pg], en = ts->pend[pg];
+    S.loop_used = 1;
+    if (!down) {
+        if (S.pd_held == k)
+            S.pd_held = -1;
+        return;
+    }
+    if (S.pd_held >= 0 && S.pd_held != k) {
+        st = S.pd_held < k ? S.pd_held : k, en = S.pd_held < k ? k : S.pd_held;
+        S.pd_held = -1;
+    } else if (S.pd_tap_ms[k] && S.now - S.pd_tap_ms[k] < DOUBLE_MS) {
+        en = k, st = S.pd_prev_start > k ? k : S.pd_prev_start;
+        S.pd_tap_ms[k] = 0;
+    } else {
+        S.pd_prev_start = st;
+        st = k, en = en < k ? k : en;
+        S.pd_held = k;
+        S.pd_tap_ms[k] = S.now ? S.now : 1;
+    }
+    qd_undo_hint(&A, QD_UK_EDIT);
+    qd_page_set_range(qd_ctl_pat(&A), A.sel, pg, st, en);
+}
+
+/* ------------------------------------------------------------------ Sequence's modes --- */
+static void tap(int b);
+/* the core put on mode m: HOME for TRACKS, its sound editor, its FX, its TOOLS (Loop, tapped) */
+static void seq_go(int m)
+{
+    static const int MV[SQ_N] = { MV_HOME, MV_SOUND, MV_FX, -1 };
+    if (m == SQ_TOOLS ? S.mode == MV_CORE && S.scr == QD_SCR_TOOLS : S.mode == MV[m])
+        return;
+    if (S.mode != MV_HOME && S.mode != MV_IDLE)
+        tap(B_HOME);                                    /* (HOME closes any page; at home it would cycle the views) */
+    if (m == SQ_SOUND)
+        tap(B_EDIT);
+    else if (m == SQ_FX)
+        tap(B_FX);
+    else if (m == SQ_TOOLS)
+        tap(B_SEQ);
+}
+
+/* the top row shows its mode's keys (else the fourth row of notes): Mute held always shows the tracks */
+static int top_row_on(void)
+{
+    if (S.mute_down || S.loop_down)
+        return 1;
+    if (S.mode != MV_HOME && S.mode != MV_SOUND && S.mode != MV_FX && !(S.mode == MV_CORE && S.scr == QD_SCR_TOOLS))
+        return 1;                                       /* (the core's other pages: its black keys, always) */
+    return !S.top_hidden;
+}
+
+static void track_button(int n, int down)
+{
+    if (down) {
+        S.tb_down = n;
+        S.tb_ms = S.now ? S.now : 1;
+        S.tb_prev_mode = S.seq_mode;
+        S.tb_prev_hidden = S.top_hidden;
+        S.top_hidden = 0;                               /* its top row, at once (held: while held) */
+        if (n != S.seq_mode) {
+            S.seq_mode = n;
+            seq_go(n);
+            show_name(SQ_NAME[n]);
+        }
+        return;
+    }
+    if (S.tb_down != n)
+        return;
+    S.tb_down = -1;
+    if (S.now - S.tb_ms >= HOLD_MS) {                   /* held: back to what was up */
+        S.top_hidden = S.tb_prev_hidden;
+        if (S.tb_prev_mode != S.seq_mode) {
+            S.seq_mode = S.tb_prev_mode;
+            seq_go(S.seq_mode);
+        }
+    } else if (S.tb_prev_mode == n)                     /* the active mode's button tapped: its top row hides / shows */
+        S.top_hidden = !S.tb_prev_hidden;
+    else
+        S.top_hidden = 0;
 }
 
 /* ------------------------------------------------------------------ input --- */
@@ -400,6 +671,40 @@ static int detents(int acc_i, int delta, int div)
     return d;
 }
 
+/* a held track pad's VOLUME, PAN or a send (TS_*), d detents: through the core's own mix knobs and room sends, the
+ * track put selected for the turn (no step is held: a step held would take a lock) */
+static void track_mix(int k, int d)
+{
+    static const struct { int8_t page, knob; } MK[5] = { {0, QD_K_1}, {0, QD_K_2}, {1, QD_K_1}, {0, QD_K_3}, {0, QD_K_4} };
+    const int keep_sel = A.sel, keep_page = A.ui.mix_page, keep_held = A.ui.nheld;
+    if (S.tpad < 0 || k < 0 || k >= TS_N)
+        return;
+    A.sel = S.tpad;
+    A.ui.nheld = 0;
+    if (k < TS_CRUSH) {
+        A.ui.mix_page = MK[k].page;
+        qd_mix_knob(&A, MK[k].knob, d);
+    } else
+        qd_room_turn(&A, k - TS_CRUSH, d);
+    A.sel = keep_sel;
+    A.ui.mix_page = keep_page;
+    A.ui.nheld = keep_held;
+    S.tpad_used = 1;
+    S.last_knob = KI_TRACK + k;
+    S.turn_ms = S.now ? S.now : 1;
+}
+
+/* a held step's micro timing or velocity (the hold modes of the core's knob 1, as the home knobs) */
+static void step_hold(int which, int d)
+{
+    const int keep = A.ui.hmode;
+    A.ui.hmode = which == KI_MICRO ? UI_F_MICRO : UI_F_VEL;
+    qd_app_knob(&A, QD_K_1, d);
+    A.ui.hmode = keep;
+    S.last_knob = which;
+    S.turn_ms = S.now ? S.now : 1;
+}
+
 static void knob(int i, int delta)
 {
     const int d = detents(i, delta, KNOB_DIV);
@@ -408,6 +713,10 @@ static void knob(int i, int delta)
     S.turn_ms = S.now ? S.now : 1;
     if (!d || S.over)
         return;
+    if (S.tpad >= 0) {                                  /* a track pad held: knob i its send i */
+        track_mix(TS_CHORUS + i, d);
+        return;
+    }
     if (S.mode == MV_SOUND) {
         const spage_t *sp = &SND[S.spage];
         if (i < sp->n) {
@@ -425,13 +734,13 @@ static void knob(int i, int delta)
             A.ui.fx_page = keep;
         }
     } else if (mix_native()) {
-        if (i < 6) {                                    /* a fader a track: the core's LEVEL knob with that track selected */
+        if (i < QD_TRACKS) {                            /* a fader a track: the core's LEVEL knob with that track selected */
             const int keep = A.sel;
             A.sel = i;
             qd_app_knob(&A, QD_K_1, d);
             A.sel = keep;
         } else if (i == 6)
-            qd_app_knob(&A, QD_K_2, d);                 /* the selected track's pan */
+            qd_app_knob(&A, QD_K_2, d);                 /* the selected track's pan (six tracks: knob 7) */
     } else if (S.mode == MV_HOME) {                     /* the core's hold mode put on this knob's for the turn */
         const int keep = A.ui.hmode, second = S.shift && i >= 1 && i <= 5;
         A.ui.hmode = S.shift && i == 7 ? UI_F_FUNC : HOME_MODE[i];
@@ -458,6 +767,25 @@ static void wheel(int delta)
         qd_ctl_set_tempo(&A, bpm < 30 ? 30 : bpm > 300 ? 300 : bpm);
     } else if (S.mode == MV_BROWSE) {                   /* the sounds: each one heard on the track as it comes up */
         qd_br_turn(&A, d);
+    } else if (page_mode()) {                           /* the clip's length in pages: longer, the new pages in the
+                                                         * loop; shorter, the pages past it out (muted pages stay) */
+        const int n0 = trk_npage(), n = n0 + d < 1 ? 1 : n0 + d > QD_NPAGE ? QD_NPAGE : n0 + d;
+        unsigned m = trk_loop();
+        if (n > n0)
+            m |= ((1u << n) - 1u) & ~((1u << n0) - 1u);
+        else
+            m &= (1u << n) - 1u;
+        set_loop(m ? m : 1u);
+        S.loop_used = 1;
+        {
+            char v[20];
+            snprintf(v, sizeof v, "%d PAGES", n);
+            show_name(v);
+        }
+    } else if (S.tpad >= 0) {                           /* a track pad held: its pan */
+        track_mix(TS_PAN, d);
+    } else if (!S.shift && S.mode == MV_HOME && A.ui.nheld) {   /* a step held: its micro timing */
+        step_hold(KI_MICRO, d);
     } else if (S.shift && S.mode != MV_CORE) {
         if (A.ui.nheld) {                               /* Shift, a step held: that step's own sound (a lock) */
             qd_app_knob(&A, QD_K_PRESETS, d);
@@ -564,10 +892,17 @@ static void track_press(int t)
         return;
     if (S.mute_down) {
         S.mute_used = 1;
-        if (S.shift)
+        if (S.shift)                                    /* Shift + Mute + a track: solo (the Ableton gesture) */
             A.seq.solo ^= (uint8_t)(1u << t);
-        else
+        else if (S.mute_tap_ms[t] && S.now - S.mute_tap_ms[t] < DOUBLE_MS) {   /* a double tap: solo (the first tap's
+                                                         * mute taken back) */
             A.seq.mute ^= (uint8_t)(1u << t);
+            A.seq.solo ^= (uint8_t)(1u << t);
+            S.mute_tap_ms[t] = 0;
+        } else {
+            A.seq.mute ^= (uint8_t)(1u << t);
+            S.mute_tap_ms[t] = S.now ? S.now : 1;
+        }
     } else
         qd_ctl_select_track(&A, t);
 }
@@ -582,18 +917,30 @@ static void page_pad(int col, int down, int vel)
                 track_press(col);
         } else
             qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
-    } else if (S.mode == MV_SOUND) {
-        if (down && S.shift) {                          /* Shift: the dice, this group's page shaken */
+    } else if (S.mode == MV_SOUND) {                    /* TRIG / SOUND: six page pads, then RND PAGE, RND SOUND */
+        if (col >= 6) {                                 /* held a second: shaken (egm_ui_step); a tap does nothing */
+            if (down)
+                S.rnd_pad = col, S.rnd_ms = S.now ? S.now : 1, S.rnd_done = 0;
+            else if (S.rnd_pad == col)
+                S.rnd_pad = -1;
+        } else if (down && S.shift) {                   /* Shift: the dice, this page shaken at once */
             qd_snd_randomise(&A, g_snd_core[S.spage][0]);
             show_name("SHAKEN");
         } else if (down)
-            snd_group(col);
-    } else if (S.mode == MV_FX) {
-        if (down)
-            fx_go(col == 7 && S.fpage == 7 ? 8 : col);
-    } else if (S.mode == MV_HOME) {
-        if (down)
+            snd_pad(col);
+    } else if (S.mode == MV_FX) {                       /* the floors; pad 7: WARP, GLITCH, TV in turn; pad 8: PERFORM
+                                                         * (not built yet) */
+        if (down && col < 6)
+            fx_go(col);
+        else if (down && col == 6)
+            fx_go(S.fpage >= 6 && S.fpage < 8 ? S.fpage + 1 : 6);
+    } else if (S.mode == MV_HOME) {                     /* TRACKS: select; held, Volume / the wheel / the knobs are its */
+        if (down) {
             track_press(col);
+            S.tpad = col < QD_TRACKS ? col : -1;
+            S.tpad_used = 0;
+        } else if (S.tpad == col)
+            S.tpad = -1;
     } else
         qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
 }
@@ -613,6 +960,10 @@ static void surface_note(int note, int vel)
     }
     if (note >= N_STEP0 && note < N_STEP0 + 16) {
         const int i = note - N_STEP0;
+        if (page_mode() && !S.shift) {                 /* page mode: the steps are the pages */
+            page_step(i, down);
+            return;
+        }
         if (down && (S.shift || S.mode == MV_BROWSE)) {     /* (in the sounds the steps do nothing: no slot picked
                                                          * by a stray finger) */
             step_eaten |= (uint16_t)(1u << i);
@@ -626,10 +977,16 @@ static void surface_note(int note, int vel)
     }
     if (note >= N_PAD0 && note < N_PAD0 + 32) {
         const int idx = note - N_PAD0;                  /* row 0 the bottom */
-        if (idx >= 24)
+        if (page_mode() && idx < 16) {                  /* rows 3-4: the shown page's start and end */
+            range_pad(idx >= 8 ? idx - 8 : idx + 8, down);
+            return;
+        }
+        if (page_mode() && idx < 24)
+            return;
+        if (idx >= 24 && (top_row_on() || !down) && S.pad_note[idx] < 0)
             page_pad(idx - 24, down, vel);
         else
-            note_pad(idx, vel);
+            note_pad(idx, vel);                         /* (the top row hidden: the fourth row of keys) */
     }
 }
 
@@ -645,6 +1002,15 @@ static void surface_cc(int cc, int v)
     switch (cc) {
     case CC_JOG: S.touch_turned = 1; wheel(rel(v)); break;
     case CC_VOLUME:
+        if (S.tpad >= 0 || (S.mode == MV_HOME && A.ui.nheld && !S.shift)) {   /* a track pad held: its volume; a step
+                                                         * held: its velocity (the master untouched) */
+            const int d = detents(9, rel(v), KNOB_DIV);
+            if (d && S.tpad >= 0)
+                track_mix(TS_VOL, d);
+            else if (d)
+                step_hold(KI_VEL, d);
+            break;
+        }
         S.pot += rel(v) * 8;
         S.pot = S.pot < 0 ? 0 : S.pot > 1023 ? 1023 : S.pot;
         qd_app_master(&A, S.pot);
@@ -694,22 +1060,55 @@ static void surface_cc(int cc, int v)
         } else
             btn(B_EDIT, down);
         break;
-    case CC_MUTE:                                       /* held with a track: mute it. Tapped: the mix (again: its
-                                                         * sends, the FX mix) */
+    case CC_MUTE:                                       /* held: the top row is the tracks (tap: mute, double tap or
+                                                         * Shift: solo). Tapped: the selected track muted / heard.
+                                                         * Shift + Mute tapped: the mix (until Session has its MIX) */
         if (down)
             S.mute_down = 1, S.mute_used = 0;
         else {
             S.mute_down = 0;
-            if (!S.mute_used)
-                tap(B_ENV);
+            if (!S.mute_used) {
+                if (S.shift)
+                    tap(B_ENV);
+                else
+                    A.seq.mute ^= (uint8_t)(1u << A.sel);
+            }
         }
         break;
-    case CC_LOOP: S.loop_down = down; btn(B_SEQ, down); break;   /* held: the steps choose the pattern */
-    case CC_COPY:                                       /* the pattern copied; Shift: pasted (SHIFT + B4 / B5) */
-        if (down)
+    case CC_LOOP:                                       /* page mode: tapped latched (again: off), held while held.
+                                                         * Shift + Loop held: the patterns (until Session) */
+        if (down) {
+            S.loop_btn = 1, S.loop_ms = S.now ? S.now : 1, S.loop_used = 0;
+            if (S.shift) {
+                S.loop_down = 1;
+                btn(B_SEQ, 1);
+            }
+        } else {
+            S.loop_btn = 0;
+            if (S.loop_down) {
+                S.loop_down = 0;
+                btn(B_SEQ, 0);
+            } else if (!S.loop_used && S.now - S.loop_ms < HOLD_MS) {
+                S.page_latch = !S.page_latch;
+                show_name(S.page_latch ? "PAGES" : "STEPS");
+            }
+            S.pg_held = S.pd_held = -1;
+        }
+        break;
+    case CC_COPY:                                       /* the pattern copied; Shift: pasted (SHIFT + B4 / B5). Page
+                                                         * mode: held, a page tapped is copied, then pasted */
+        S.copy_down = down;
+        if (page_mode()) {
+            if (!down)
+                S.pg_copied = -1;
+        } else if (down)
             qd_shift_black(&A, S.shift ? 4 : 3);
         break;
-    case CC_DELETE:                                     /* the core's B11: clear. Shift: the track (pressed twice) */
+    case CC_DELETE:                                     /* the core's B11: clear. Shift: the track (pressed twice). Page
+                                                         * mode: held, a page tapped is cleared */
+        S.delete_down = down;
+        if (page_mode())
+            break;
         if (!S.shift)
             qd_app_key(&A, QD_BLACK_KEY[10], down, STEP_VEL);
         else if (down)
@@ -739,7 +1138,7 @@ static void surface_cc(int cc, int v)
     case CC_RIGHT:
         if (down) {
             const int pg = A.ui.page[A.sel] + (cc == CC_RIGHT ? 1 : -1);
-            char nm[12];
+            char nm[16];
             qd_ctl_set_page(&A, pg);
             snprintf(nm, sizeof nm, "PAGE %d", A.ui.page[A.sel] + 1);
             show_name(nm);
@@ -750,13 +1149,8 @@ static void surface_cc(int cc, int v)
             qd_shift_undo(&A, S.shift ? 1 : -1);
         break;
     default:
-        if (cc >= CC_TRACK4 && cc <= CC_TRACK1 && down) {   /* Shift: tracks 5 and 6 on the first two */
-            const int n = CC_TRACK1 - cc;
-            if (S.mute_down)
-                track_press(n);
-            else
-                qd_ctl_select_track(&A, S.shift && n < 2 ? n + 4 : n);
-        }
+        if (cc >= CC_TRACK4 && cc <= CC_TRACK1)         /* Sequence's modes: TRACKS, TRIG / SOUND, FX, TOOLS */
+            track_button(CC_TRACK1 - cc, down);
         break;
     }
 }
@@ -867,6 +1261,13 @@ static void sync(void)
         if (m == MV_CORE && *screen_name(scr))
             show_name(screen_name(scr));
     }
+    if (S.tb_down < 0) {                                /* the mode follows the core when it moves by itself (Back,
+                                                         * a page closed): the track buttons light what is up */
+        if (m == MV_HOME) S.seq_mode = SQ_TRACKS;
+        else if (m == MV_SOUND) S.seq_mode = SQ_SOUND;
+        else if (m == MV_FX) S.seq_mode = SQ_FX;
+        else if (m == MV_CORE && scr == QD_SCR_TOOLS) S.seq_mode = SQ_TOOLS;
+    }
     if (m == MV_SOUND)                                  /* the core's editor follows the page here */
         A.ui.snd_page = g_snd_core[S.spage][0];
     else if (m == MV_FX && A.ui.fx_page != FXP[S.fpage].a && A.ui.fx_page != FXP[S.fpage].b)
@@ -901,7 +1302,12 @@ static void leds(void)
     int i;
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
-        if (S.mode == MV_BROWSE)
+        if (page_mode() && !S.shift) {                  /* the pages: shown white, playing green, in the loop blue,
+                                                         * out of it dark blue, past the end grey */
+            const int pp = qd_ctl_playing_page(&A, A.sel);
+            led_note(N_STEP0 + i, (uint8_t)(i == A.ui.page[A.sel] ? C_WHITE : i == pp ? C_GREEN
+                                            : i >= trk_npage() ? C_GREY : (trk_loop() >> i & 1u) ? C_BLUE : C_DKBLUE));
+        } else if (S.mode == MV_BROWSE)
             led_note(N_STEP0 + i, C_OFF);
         else if (S.shift)                               /* Shift: the steps that are shortcuts, the open one bright */
             led_note(N_STEP0 + i, (uint8_t)(!SHIFT_STEP[i] ? C_OFF
@@ -910,15 +1316,31 @@ static void leds(void)
         else
             led_note(N_STEP0 + i, shade(L.key[QD_WHITE_KEY[i]], C_GREY, C_LGREY, C_WHITE));
     }
-    for (i = 0; i < 24; i++)                            /* the note pads: struck white, a root green, the rest dim */
+    for (i = 0; i < 32; i++) {                          /* the note pads: struck white, a root green, the rest dim (the
+                                                         * top row too while it is hidden) */
+        if (i >= 24 && top_row_on())
+            continue;
+        if (page_mode() && i < 24) {                    /* rows 3-4: the page's steps, its start and end white, the
+                                                         * range blue; row 2 dark */
+            const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+            const int pg = A.ui.page[A.sel], k = i >= 8 ? i - 8 : i + 8;
+            led_note(N_PAD0 + i, (uint8_t)(i >= 16 ? C_OFF : k == ts->pstart[pg] || k == ts->pend[pg] ? C_WHITE
+                                           : k > ts->pstart[pg] && k < ts->pend[pg] ? C_BLUE : C_GREY));
+            continue;
+        }
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
                                                                  : pad_is_root(i) ? C_GREEN : C_GREY));
-    for (i = 0; i < 8; i++) {                           /* the page keys */
+    }
+    for (i = 0; i < 8 && top_row_on(); i++) {           /* the top row's keys */
         uint8_t c;
-        if (S.mode == MV_SOUND)
-            c = (uint8_t)(SND[S.spage].group == i ? C_WHITE : C_BLUE);
-        else if (S.mode == MV_FX)
-            c = (uint8_t)(S.fpage == i || (i == 7 && S.fpage == 8) ? C_WHITE : C_BLUE);
+        if (S.mute_down)                                /* Mute held: the tracks, a muted one red, a soloed one yellow */
+            c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.solo >> i & 1u) ? C_YELLOW : (A.seq.mute >> i & 1u) ? C_RED
+                          : A.sel == i ? C_WHITE : C_BLUE);
+        else if (S.mode == MV_SOUND)                    /* the page pads (ENV, LFO light blue), RND PAGE, RND SOUND */
+            c = (uint8_t)(i == 6 ? (S.rnd_pad == 6 ? C_WHITE : C_DKYELLOW) : i == 7 ? (S.rnd_pad == 7 ? C_WHITE : C_RED)
+                          : snd_pad_of(S.spage) == i ? C_WHITE : i >= 4 ? C_LTBLUE : C_LGREY);
+        else if (S.mode == MV_FX)                       /* the floors; pad 7 WARP / GLITCH / TV; pad 8 PERFORM (later) */
+            c = (uint8_t)(i == 7 ? C_OFF : S.fpage == i || (i == 6 && S.fpage >= 6) ? C_WHITE : C_BLUE);
         else if (S.mode == MV_HOME)                     /* the tracks: the selected one, a flash as each plays */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.mute >> i & 1u) ? C_RED : A.sel == i ? C_WHITE
                           : qd_ctl_trig_flash(&A, i) ? C_LTBLUE : C_BLUE);
@@ -933,7 +1355,7 @@ static void leds(void)
     led_cc(CC_MUTE, (uint8_t)(S.mode == MV_MIX ? 124 : 16));
     led_cc(CC_DOWN, white(L.button[B_OCTDN]));
     led_cc(CC_UP, white(L.button[B_OCTUP]));
-    led_cc(CC_LOOP, white(L.button[B_SEQ]));
+    led_cc(CC_LOOP, (uint8_t)(page_mode() ? 124 : S.loop_down ? 64 : 16));
     led_cc(CC_COPY, 16);
     led_cc(CC_DELETE, white(L.key[QD_BLACK_KEY[10]]));
     led_cc(CC_UNDO, 16);
@@ -945,8 +1367,10 @@ static void leds(void)
     led_cc(CC_PLAY, L.play_green ? C_GREEN : shade(L.button[B_PLAY], C_GREY, C_LGREY, C_WHITE));
     led_cc(CC_REC, A.ui.rec ? C_RED : C_OFF);
     led_cc(CC_SAMPLE, (uint8_t)(S.mode == MV_SOUND ? C_WHITE : C_GREY));
-    for (i = 0; i < 4; i++)                             /* the track buttons: the selected one (5 and 6: the first two, dim) */
-        led_cc(CC_TRACK1 - i, (uint8_t)(A.sel == i ? C_YELLOW : A.sel == i + 4 && i < 2 ? C_DKYELLOW : C_GREY));
+    for (i = 0; i < 4; i++)                             /* the track buttons: Sequence's modes, the one up white (light
+                                                         * grey while its top row is hidden), the others dim */
+        led_cc(CC_TRACK1 - i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.seq_mode != i ? C_GREY
+                                        : top_row_on() ? C_WHITE : C_LGREY));
 }
 
 /* ------------------------------------------------------------------ the API --- */
@@ -979,6 +1403,9 @@ void egm_init(const char *flash_path)
     S.scr = QD_SCR_IDLE;
     S.spage = 3;                                        /* OSC 1: the sound's first page */
     S.fpage = 1;                                        /* CHORUS */
+    S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = -1;
+    for (i = 0; i < 6; i++)
+        S.grp_last[i] = SND_PAD[i][0];
     for (i = 0; i < NSND; i++)
         for (j = 0; j < SND[i].n; j++)
             g_snd_core[i][j] = (int8_t)snd_page_index(SND[i].e[j].page);
@@ -1028,6 +1455,11 @@ int egm_ui_step(uint32_t now_ms)
         sync();
     }
     qd_app_tick_locked(&A, now_ms);
+    if (S.rnd_pad >= 0 && !S.rnd_done && S.mode == MV_SOUND && now_ms - S.rnd_ms >= RND_MS) {   /* held a second */
+        qd_snd_randomise(&A, S.rnd_pad == 6 ? g_snd_core[S.spage][0] : -1);
+        show_name(S.rnd_pad == 6 ? "PAGE SHAKEN" : "SOUND SHAKEN");
+        S.rnd_done = 1;
+    }
     if (S.home_up_ms && (int32_t)(now_ms - S.home_up_ms) >= 0) {
         S.home_up_ms = 0;
         btn(B_HOME, 0);
@@ -1065,13 +1497,23 @@ static void room_draw(mono_t *m, uint32_t now_ms)
     int i, n = 0, k = -1;
     qd_view_edit(&A, &h, &l);
     memset(&r, 0, sizeof r);
-    r.ntrack = QD_TRACKS;
+    r.ntrack = 0;                                       /* (no lift: the track buttons and the top row show the tracks) */
     r.sel = A.sel;
+    {   /* the page rail: the clip's pages up to the last one in its loop */
+        const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+        int p;
+        r.page_loop = ts->loop ? ts->loop : 1u;
+        for (p = 0; p < QD_NPAGE; p++)
+            if (r.page_loop >> p & 1u)
+                r.npage = p + 1;
+        r.page_shown = A.ui.page[A.sel];
+        r.page_playing = qd_ctl_playing_page(&A, A.sel);
+    }
     r.mute = l.trk_mute;
     for (i = 0; i < QD_TRACKS; i++)
         if (l.trk_flash[i] >= 0.f && l.trk_flash[i] < 0.09f)
             r.flash |= (uint8_t)(1u << i);
-    st[n].at = -0.01f, st[n].len = 0.f, st[n].x = 13, st[n].y = SCR_RM_FLOOR, st[n].i = -1, n++;   /* the door in */
+    st[n].at = -0.01f, st[n].len = 0.f, st[n].x = 4, st[n].y = SCR_RM_FLOOR, st[n].i = -1, n++;   /* the door in */
     for (i = 0; i < 16; i++) {
         const ui_lcol_t *c = &l.col[i];
         const int noted = c->in_range && c->on && c->type != 2 && c->nnote > 0;
@@ -1129,13 +1571,19 @@ static void room_draw(mono_t *m, uint32_t now_ms)
             }
         }
     } else if (!l.playing) {                            /* stopped: he waits at the door */
-        r.agent_x = 15, r.agent_y = SCR_RM_FLOOR, r.agent_pose = 0;
+        r.agent_x = 5, r.agent_y = SCR_RM_FLOOR, r.agent_pose = 0;
     }
     scr_room(m, &r, now_ms);
 }
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (page_mode()) {                                  /* the clip's pages */
+        char v[12];
+        snprintf(v, sizeof v, "PAGE %d", A.ui.page[A.sel] + 1);
+        scr_pages(m, "LOOP", v, trk_npage(), trk_loop(), A.ui.page[A.sel], qd_ctl_playing_page(&A, A.sel), now_ms);
+        return;
+    }
     if (S.mode == MV_SOUND) {
         const int page = g_snd_core[S.spage][0];
         ui_snd_t v;
@@ -1194,12 +1642,12 @@ static void page_draw(mono_t *m, uint32_t now_ms)
         scr_knob(m, head, v.e[2].ok && v.e[2].name ? v.e[2].name : "NONE", v.n > 1 ? (v.pos - 1) * 1000 / (v.n - 1) : -1);
     } else if (mix_native()) {
         ui_mix_t v;
-        int level[6], mute[6], meter[6], i;
+        int level[QD_TRACKS], mute[QD_TRACKS], meter[QD_TRACKS], i;
         memset(&v, 0, sizeof v);
         qd_view_mix(&A, &v);
-        for (i = 0; i < 6; i++)
+        for (i = 0; i < QD_TRACKS; i++)
             level[i] = v.tr[i].level, mute[i] = v.tr[i].mute, meter[i] = (int)(v.tr[i].meter * 1000.f);
-        scr_mix(m, level, mute, meter, 6, A.sel);
+        scr_mix(m, level, mute, meter, QD_TRACKS, A.sel);
     } else {
         if (S.mode == MV_HOME && A.ui.nheld) {          /* a step held: which, and the notes in it */
             const qd_pattern_t *P = qd_ctl_cpat(&A);
@@ -1232,7 +1680,8 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
 {
     const int pages = S.mode == MV_SOUND || S.mode == MV_FX || mix_native();
     const int turned = S.turn_ms && now_ms - S.turn_ms < TURN_MS;
-    const int kn = S.touch >= 0 && S.touch < 8 ? S.touch : turned ? S.last_knob : -1;
+    const int kn = turned && S.last_knob >= KI_MICRO ? S.last_knob : S.touch >= 0 && S.touch < 8 ? S.touch
+                 : turned ? S.last_knob : -1;
     mono_t m;
     kinfo_t ki;
     int changed, done = 0;
@@ -1244,6 +1693,9 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
         done = 1;
     } else if (S.over == OV_POWER) {
         scr_menu(&m, POWER_ITEMS, 2, S.menu_sel);
+        done = 1;
+    } else if (S.rnd_pad >= 0 && !S.rnd_done && S.mode == MV_SOUND) {   /* RND held: the brain laughs, the bar fills */
+        scr_randomize(&m, now_ms, (int)((now_ms - S.rnd_ms) * 100u / RND_MS));
         done = 1;
     } else if (S.loop_down && S.mode != MV_IDLE) {      /* Loop held: the pattern playing, the one queued after it */
         char v[12];
@@ -1302,8 +1754,11 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
 void egm_describe(char *out, int cap)
 {
     snprintf(out, (size_t)cap, "mode=%d over=%d track=%d screen=%d playing=%d bpm=%d pat=%d nheld=%d rec=%d spage=%d fpage=%d "
-             "mute=%x page=%d shift=%d", S.mode, S.over, A.sel + 1, qd_view_screen(&A), A.seq.playing, qd_seq_bpm(&A.seq),
-             A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.ui.page[A.sel] + 1, S.shift);
+             "mute=%x solo=%x page=%d shift=%d sq=%s top=%s", S.mode, S.over, A.sel + 1, qd_view_screen(&A), A.seq.playing,
+             qd_seq_bpm(&A.seq), A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.seq.solo,
+             A.ui.page[A.sel] + 1, S.shift, SQ_NAME[S.seq_mode], top_row_on() ? "on" : "hidden");
+    snprintf(out + strlen(out), (size_t)cap - strlen(out), " pagemode=%d loopmask=%x npage=%d", page_mode(), trk_loop(),
+             trk_npage());
     {   /* the page shown: its trigs, and those with notes */
         static ui_held_t h;
         static ui_lane_t l;

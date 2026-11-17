@@ -27,7 +27,10 @@ CORE_SRC := $(addprefix $(CORE)/app/,app.c ctl.c ctl_step.c ctl_rec.c ctl_leds.c
             $(CORE)/voice/fx/qd_fx.c $(if $(NO_SAM),,$(CORE)/voice/sam/say.c)
 PVG_SRC := $(wildcard $(PVG)/source/*.c)
 INC := -Isrc $(addprefix -I$(CORE)/,app ui gfx seq voice voice/quad voice/sid voice/fx voice/sam store tests) -I$(PVG)/include
-DEFS := -DSID_COMB_CONST -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD -DQD_USB_HOST=1
+# the clip workflow's sizes (design/WORKFLOW.md): 8 tracks, 16 pages of 16 steps (the FM-1 keeps 6 and 8; the store's
+# format follows the sizes, so a store of other sizes starts fresh)
+DEFS := -DSID_COMB_CONST -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD -DQD_USB_HOST=1 \
+        -DQD_TRACKS=8 -DQD_NSTEP=256
 
 EGM_SRC := src/egm.c src/flash.c src/mono.c src/screens.c $(if $(NO_SAM),src/say_stub.c,)
 PLAT_SRC := $(if $(filter move,$(TARGET)),src/plat_move.c,src/plat_sim.c)

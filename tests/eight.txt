@@ -1,0 +1,115 @@
+# 8 tracks and 16 pages (the clip workflow's sizes: Makefile DEFS)
+tap 85                   # out of the title
+wait 300
+tap 85
+wait 500
+state start
+note 98 100              # top pad 7: track 7
+wait 30
+note 98 0
+wait 100
+state track7
+note 99 100              # top pad 8: track 8
+wait 30
+note 99 0
+wait 100
+state track8
+note 16 100              # a step on page 1 of track 8
+wait 30
+note 16 0
+cc 88 127                # Mute held + pad 8: track 8 muted
+note 99 100
+wait 30
+note 99 0
+cc 88 0
+wait 100
+state t8-muted
+cc 63 127                # Right x 11: page 12
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+cc 63 127
+cc 63 0
+wait 100
+note 20 100              # step 5 of page 12
+wait 30
+note 20 0
+wait 200
+state page12
+shot e01-page12
+wait 2000
+shot e02-room-rail
+tap 58                   # Loop tapped: page mode
+wait 100
+state pagemode
+cc 14 11                 # the wheel: 12 pages long
+wait 100
+state len12
+wait 900
+shot e03-pages
+note 19 100              # page 4 held: out of the loop
+wait 500
+note 19 0
+wait 100
+state p4-off
+note 27 100              # page 12 tapped twice: it loops alone
+wait 30
+note 27 0
+wait 100
+note 27 100
+wait 30
+note 27 0
+wait 100
+state p12-solo
+note 27 100              # twice again: the loop back
+wait 30
+note 27 0
+wait 100
+note 27 100
+wait 30
+note 27 0
+wait 100
+state p12-back
+note 78 100              # row 3 pad 3: page 12 starts at step 3
+wait 30
+note 78 0
+wait 100
+note 70 100              # row 4 pad 3 (step 11) tapped twice: it ends there
+wait 30
+note 70 0
+wait 100
+note 70 100
+wait 30
+note 70 0
+wait 100
+wait 900
+shot e04-range
+state range
+tap 58                   # Loop tapped: page mode off
+wait 900
+state steps-again
+cc 49 127                # Shift + Mute: the mix, eight faders
+tap 88
+cc 49 0
+wait 900
+shot e05-mix8
+cc 78 8                  # knob 8: track 8's fader
+wait 100
+shot e06-t8-level
+state end

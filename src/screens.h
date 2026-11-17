@@ -8,10 +8,15 @@
 
 /* the intro and screensaver: the laughing brain in its jar; ms animates the jaw and the lightning */
 void scr_intro(mono_t *m, uint32_t ms);
+/* RND PAGE / RND SOUND held: the brain laughs while the bar fills (pct 0..100) */
+void scr_randomize(mono_t *m, uint32_t ms, int pct);
 /* a page's name, the whole screen, one fixed size (the 16-pixel font: 8 characters a line, two lines at most) */
 void scr_page_name(mono_t *m, const char *name);
 /* a knob touched or turned: its name, its value large (value 0: none known), a bar (frac < 0: no bar; else 0..1000) */
 void scr_knob(mono_t *m, const char *name, const char *value, int frac);
+/* page mode: the knob pop-up's layout, its bar's place the clip's 16 pages: solid in the loop, outline out of it,
+ * dots past the end; a notch over the page shown; the page playing blinks */
+void scr_pages(mono_t *m, const char *name, const char *value, int npage, unsigned loop, int shown, int playing, uint32_t ms);
 /* a part of the core's own screen (240 x 240 RGB565 big-endian, a 120 x 120 picture at 2x): from logical column
  * left and row top, one logical pixel a Move pixel, lit when it is brighter than a dark blue; centred when narrower */
 void scr_core_crop(mono_t *m, const uint16_t *lcd_be, int left, int top);
@@ -37,8 +42,11 @@ void scr_lift(mono_t *m, const char *from, const char *to, int up, int t);
 typedef struct {
     struct { uint8_t on, guard, held, y, w; } col[16];
     int agent_x, agent_y, agent_pose;
-    int ntrack, sel;
+    int ntrack, sel;                    /* ntrack 0: no lift (the floor the full width) */
     uint8_t mute, flash;                /* bit t: track t not heard, playing a trig now */
+    int npage, page_shown, page_playing;   /* the rail under the floor: one dash a page in the loop (npage 0: dots),
+                                         * the page shown solid, the page playing blinking (-1 none) */
+    uint16_t page_loop;                 /* bit p: page p in the loop */
 } scr_room_t;
 void scr_room(mono_t *m, const scr_room_t *r, uint32_t ms);
 /* an FX floor's picture from its values, in knob order (0..1000, < 0 none) */

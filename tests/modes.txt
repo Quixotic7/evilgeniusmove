@@ -1,0 +1,126 @@
+# every native picture, and the controls added with them
+tap 85
+wait 300
+tap 85
+wait 500
+note 68 100              # a few notes into steps 1, 5, 9 of track 1
+note 16 100
+wait 300
+note 68 100
+wait 60
+note 68 0
+note 16 0
+wait 50
+note 20 100
+wait 300
+note 73 100
+wait 60
+note 73 0
+note 20 0
+wait 50
+note 24 100
+wait 300
+note 71 100
+wait 60
+note 71 0
+cc 71 4                  # a lock on step 9's velocity
+note 24 0
+wait 900
+shot m01-room
+state start
+tap 42                   # track button 2: TRIG / SOUND
+wait 900
+shot m02-sound
+state sound
+note 96 100              # page pad 5: ENV 1
+wait 30
+note 96 0
+wait 900
+note 96 100              # again: ENV 2
+wait 30
+note 96 0
+wait 200
+state env2
+note 99 100              # RND SOUND held
+wait 500
+shot m03-rnd-hold
+wait 700
+shot m04-rnd-done
+note 99 0
+state shaken
+tap 41                   # track button 3: FX
+wait 900
+note 98 100              # pad 7: WARP
+wait 30
+note 98 0
+wait 1300
+note 98 100              # again: GLITCH
+wait 30
+note 98 0
+wait 1300
+state fx-glitch
+shot m05-fx
+tap 41                   # FX again: its top row hidden
+wait 200
+state fx-hidden
+note 92 100              # the top row is keys now
+wait 100
+state key-played
+note 92 0
+cc 43 127                # track button 1 held: TRACKS' top row while held
+wait 600
+state tb1-held
+cc 43 0
+wait 200
+state tb1-released
+tap 43                   # track button 1 tapped: TRACKS, top row on
+wait 900
+state tracks
+cc 88 127                # Mute held
+note 93 100              # track 2: mute
+wait 30
+note 93 0
+wait 400
+note 94 100              # track 3 double-tapped: solo
+wait 30
+note 94 0
+wait 100
+note 94 100
+wait 30
+note 94 0
+wait 100
+shot m06-mute-held
+state mute-held
+cc 88 0
+wait 200
+note 92 100              # track pad 1 held + Volume, wheel, knob 1
+wait 100
+cc 79 8
+wait 50
+shot m07-t1-volume
+cc 14 2
+wait 50
+shot m08-t1-pan
+cc 71 8
+wait 50
+shot m09-t1-chorus
+note 92 0
+wait 900
+note 16 100              # step 1 held + wheel, Volume
+wait 300
+cc 14 3
+wait 50
+shot m10-step-micro
+cc 79 8
+wait 50
+shot m11-step-vel
+note 16 0
+wait 900
+tap 40                   # track button 4: TOOLS
+wait 900
+state tools
+shot m12-tools
+tap 43
+wait 900
+shot m13-room-again
+state end

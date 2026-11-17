@@ -1,0 +1,240 @@
+{
+  "format": "ableton-move-designer",
+  "version": 3,
+  "name": "Evil Genius",
+  "items": [
+    {
+      "id": "d84rsfljo4un",
+      "x": -319,
+      "y": 67,
+      "w": 1048,
+      "h": 616,
+      "type": "layout",
+      "name": "Main Layout",
+      "description": "Every control, default mode.",
+      "scope": [
+        "screen",
+        "knob-1",
+        "knob-2",
+        "knob-3",
+        "knob-4",
+        "knob-5",
+        "knob-6",
+        "knob-7",
+        "knob-8",
+        "knobled-1",
+        "knobled-2",
+        "knobled-3",
+        "knobled-4",
+        "knobled-5",
+        "knobled-6",
+        "knobled-7",
+        "knobled-8",
+        "volume",
+        "wheel",
+        "back",
+        "menu",
+        "track-1",
+        "track-2",
+        "track-3",
+        "track-4",
+        "pad-1-1",
+        "pad-1-2",
+        "pad-1-3",
+        "pad-1-4",
+        "pad-1-5",
+        "pad-1-6",
+        "pad-1-7",
+        "pad-1-8",
+        "pad-2-1",
+        "pad-2-2",
+        "pad-2-3",
+        "pad-2-4",
+        "pad-2-5",
+        "pad-2-6",
+        "pad-2-7",
+        "pad-2-8",
+        "pad-3-1",
+        "pad-3-2",
+        "pad-3-3",
+        "pad-3-4",
+        "pad-3-5",
+        "pad-3-6",
+        "pad-3-7",
+        "pad-3-8",
+        "pad-4-1",
+        "pad-4-2",
+        "pad-4-3",
+        "pad-4-4",
+        "pad-4-5",
+        "pad-4-6",
+        "pad-4-7",
+        "pad-4-8",
+        "capture",
+        "sample",
+        "loop",
+        "mute",
+        "delete",
+        "copy",
+        "undo",
+        "shift",
+        "play",
+        "record",
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+        "step-5",
+        "step-6",
+        "step-7",
+        "step-8",
+        "step-9",
+        "step-10",
+        "step-11",
+        "step-12",
+        "step-13",
+        "step-14",
+        "step-15",
+        "step-16",
+        "stepicon-1",
+        "stepicon-2",
+        "stepicon-3",
+        "stepicon-5",
+        "stepicon-6",
+        "stepicon-7",
+        "stepicon-8",
+        "stepicon-9",
+        "stepicon-10",
+        "stepicon-11",
+        "stepicon-14",
+        "stepicon-15",
+        "stepicon-16",
+        "left",
+        "right",
+        "up",
+        "down",
+        "power"
+      ],
+      "controls": {
+        "knob-1": {
+          "meta": {
+            "description": "Adjust page settings with all 8 encoders. "
+          }
+        },
+        "menu": {
+          "meta": {
+            "label": "Mode Switch",
+            "description": "Switch between the track sequencer view and the session view",
+            "click": "Switch views"
+          }
+        },
+        "back": {
+          "meta": {
+            "label": "Back"
+          }
+        },
+        "wheel": {
+          "meta": {
+            "label": "Jogwheel",
+            "description": "Select and enter pages. Each page provides 8 parameters on knobs",
+            "touch": "Shows all 8 parameters on screen while touching"
+          }
+        },
+        "step-1": {
+          "meta": {
+            "label": "Step Buttons"
+          }
+        },
+        "volume": {
+          "meta": {
+            "label": "Volume / Tempo",
+            "shiftTurn": "Change the tempo",
+            "touch": "Screen updates to show Volume, BPM, Swing"
+          }
+        },
+        "capture": {
+          "meta": {
+            "label": "Capture",
+            "description": "Works like Ableton Moves main capture feature, pressing it will capture whatever you were last playing to the sequence and also set the tempo if no sequence added yet. "
+          }
+        },
+        "sample": {
+          "meta": {
+            "label": "Resample",
+            "description": "Allows you to enter resample mode to capture the audio to disk. Can record the track or master and can also set option to record pre or post fx. "
+          }
+        },
+        "mute": {
+          "meta": {
+            "label": "Mute & Solo"
+          }
+        },
+        "copy": {
+          "meta": {
+            "label": "Copy"
+          }
+        },
+        "delete": {
+          "meta": {
+            "label": "Delete / Cut"
+          }
+        },
+        "loop": {
+          "meta": {
+            "label": "Loop/Page Mode",
+            "description": "Maps each page to the 16 steps. Click a page to select it. Turn on/off pages by holding them or double click to solo. Last page pressed gets selected. The start/end of the page gets set using the pads on rows 3 and 4. ",
+            "click": "Lock on the mode",
+            "hold": "Temp turn on while holding, exit once released"
+          }
+        },
+        "undo": {
+          "meta": {
+            "label": "Undo"
+          }
+        },
+        "shift": {
+          "meta": {
+            "label": "Shift",
+            "click": "Sticky"
+          }
+        },
+        "left": {
+          "meta": {
+            "label": "Page left"
+          }
+        },
+        "right": {
+          "meta": {
+            "label": "Page Right"
+          }
+        },
+        "up": {
+          "meta": {
+            "label": "Octave Up"
+          }
+        },
+        "down": {
+          "meta": {
+            "label": "Octave Down"
+          }
+        },
+        "play": {
+          "meta": {
+            "label": "Play"
+          }
+        },
+        "record": {
+          "meta": {
+            "label": "Record"
+          }
+        },
+        "stepicon-2": {
+          "meta": {
+            "label": "Global Settings"
+          }
+        }
+      },
+      "screen": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  ]
+}

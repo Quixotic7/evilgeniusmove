@@ -13,6 +13,14 @@ It runs on a Move: sound, surface, screen and real-time audio, with the Move's o
 editor, the FX tower, the mix, the knob pop-ups, the setup menu, tempo and patterns. Checked on the unit over ssh with
 the test hook (below); the LED colours and the sound itself have only been judged by ear and eye in passing.
 
+The clip workflow (`design/WORKFLOW.md`) is being built in stages. Stage 1 (Sequence's four modes on the track
+buttons, their top rows, Mute held, the hold shortcuts) is in; `tests/modes.txt` exercises it. Stage 2 (8 tracks, 16
+pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it.
+
+The Move builds the core with `-DQD_TRACKS=8 -DQD_NSTEP=256` (the FM-1 keeps 6 tracks and 8 pages). The projects store
+of other sizes is not read: **the first launch of this build on a unit erases the saved projects** (MY PRESETS are
+kept). The FM-1's JUMP condition reaches only the first 128 steps.
+
 Not done yet:
 
 - pictures for four sound pages (AMP, VOICE, MOD, CHIP), which show the core's own drawing, cropped
@@ -60,29 +68,36 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 
 | Move | Does |
 |---|---|
-| 16 step buttons | the steps: tap, hold to edit, as the FM-1's W1-W16 |
+| 16 step buttons | the steps: tap, hold to edit, as the FM-1's W1-W16. In page mode: the clip's 16 pages (below) |
 | Shift + step 1 / 2 / 5 / 6 / 11 / 14 | projects / setup (settings, exit) / tempo / metronome / MIDI FX / double the track |
-| Top pad row | at home the six tracks; in SOUND the 8 sound groups; in FX the floors (pad 8 steps through the last two) |
+| Top pad row | the mode's shortcuts (below). Hidden: a fourth row of notes |
 | Lower three pad rows | notes in the track's scale; a row up is a fourth up (Shift + - / +: octave) |
-| Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value |
-| Wheel | next / previous page (SOUND, FX), track (MIX), the page of steps at home |
+| Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value. A track pad held: its sends (CHORUS, ECHO, ROOM, CRUSH, ROBOT, WARP, GLITCH, TV) |
+| Wheel | next / previous page (SOUND, FX), track (MIX), the page of steps at home. In page mode: the clip's length in pages. A step held: its micro timing. A track pad held: its pan |
 | Shift + wheel | the sounds: turn to hear each on the track, click to take it, Back to keep your own. With a step held: that step's own sound |
 | Wheel touched | all eight values at once |
 | Wheel click | choose in the setup menu; yes / enter in the core's own menus |
-| Volume | master |
-| Track 1-4 | select track 1-4 (Shift + Track 1/2: tracks 5/6) |
+| Volume | master. A step held: its velocity. A track pad held: the track's volume |
+| Track 1-4 | Sequence's modes: 1 TRACKS, 2 TRIG / SOUND, 3 FX, 4 TOOLS. Tap: the mode and its top row; the mode's own button tapped: its top row hidden (all four rows notes) until a button is tapped again. Held: that mode's top row while held |
 | Sampling / Capture | SOUND / FX (again: next floor) |
-| Mute | tapped: MIX. Held with a track pad or button: mute it (Shift too: solo) |
+| Mute | tapped: the selected track muted / heard. Held: the top row is the tracks: tap mutes, double tap or Shift + tap solos. Shift + Mute tapped: MIX |
 | Shift + Sampling / Shift + Capture | save the sound / MIDI FX |
+| Top row in TRACKS | the 8 tracks: tap selects; held, Volume / the wheel / the knobs are its volume, pan, sends |
+| Top row in TRIG / SOUND | pages: TRIG (AMP, VOICE), OSC (1-3, MOD), SPEECH (WORD, SAY, DIGI), FILTER (and CHIP), ENV (1-3), LFO (1-3): tap again for the next, each remembers its last; pads 7 / 8 held a second: the page / the whole sound randomized (Shift + a page pad: the page at once) |
+| Top row in FX | the floors: SENDS, CHORUS, ECHO, ROOM, CRUSH, ROBOT, then WARP / GLITCH / TV on pad 7 (pad 8, PERFORM: not built yet) |
+| Top row in TOOLS | the core's TOOLS keys |
 | Shift + a top pad, in SOUND | shake the page's values (the dice) |
 | Power button | a menu: CANCEL / POWEROFF |
 | Menu / Back | home (again: the next home view) / out of whatever page is open |
 | Record | arm recording from the pads (stopped: starts with the first note); again: off |
-| Loop | held: the step buttons choose the pattern, top pads 1-4 the bank. Tapped: the core's TOOLS |
-| Copy (Shift: paste) | the pattern |
+| Loop | page mode: tapped, on (again: off); held, while held. Shift + Loop held: the step buttons choose the pattern, top pads 1-4 the bank (until Session) |
+| A page step, in page mode | tap: the page shown; held: out of the loop / back in; two taps: that page alone (again: the loop back); one held and another tapped: the loop from one to the other. White shown, green playing, blue in the loop |
+| Pad rows 3-4, in page mode | the shown page's 16 steps: tap its start, two taps its end, one held and another tapped both |
+| Copy / Delete held + a page step | the page copied, then pasted where tapped / the page cleared |
+| Copy (Shift: paste) | the pattern (page mode: see above) |
 | Delete | the core's B11: clear |
 | - / + | the core's F1 / F2 layers |
-| Left / Right | the previous / next page of 16 steps. The page shown stays put while it plays; the side the playhead is on lights |
+| Left / Right | the previous / next page of 16 steps (16 pages). The page shown stays put while it plays; the side the playhead is on lights |
 | Undo (Shift: redo) | undo |
 | Shift + volume touch + wheel click | leave, back to Move (also in the setup menu) |
 
