@@ -8,10 +8,10 @@
 #   make package NO_SAM=1    .. without SAM, the speech synthesizer that has no licence (src/say_stub.c says
 #                            what goes with it); make clean first when changing it
 #
-# The EvilGenius core is not copied here: EG points at a checkout of it (https://github.com/Quixotic7/evilgenius).
-EG ?= ../evilgenius
-CORE := $(EG)/core
-PVG := $(EG)/third_party/plutovg
+# The core is this repository's own (core/, third_party/plutovg/): copied from the FM-1's EvilGenius
+# (https://github.com/Quixotic7/evilgenius, 0.1.2) and reshaped for the Move since. The FM-1's repository is not used.
+CORE := core
+PVG := third_party/plutovg
 TARGET ?= sim
 B := build/$(TARGET)
 CC ?= cc
@@ -27,8 +27,8 @@ CORE_SRC := $(addprefix $(CORE)/app/,app.c ctl.c ctl_step.c ctl_rec.c ctl_leds.c
             $(CORE)/voice/fx/qd_fx.c $(if $(NO_SAM),,$(CORE)/voice/sam/say.c)
 PVG_SRC := $(wildcard $(PVG)/source/*.c)
 INC := -Isrc $(addprefix -I$(CORE)/,app ui gfx seq voice voice/quad voice/sid voice/fx voice/sam store tests) -I$(PVG)/include
-# the clip workflow's sizes (design/WORKFLOW.md): 8 tracks, 16 pages of 16 steps (the FM-1 keeps 6 and 8; the store's
-# format follows the sizes, so a store of other sizes starts fresh)
+# the clip workflow's sizes (design/WORKFLOW.md): 8 tracks, 16 pages of 16 steps (the store's format follows the sizes,
+# so a store of other sizes starts fresh)
 DEFS := -DSID_COMB_CONST -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD -DQD_USB_HOST=1 \
         -DQD_TRACKS=8 -DQD_NSTEP=256
 
@@ -44,7 +44,7 @@ EGM_OBJ := $(addprefix $(B)/,$(notdir $(EGM_SRC:.c=.o) $(PLAT_SRC:.c=.o)))
 
 vpath %.c $(sort $(dir $(CORE_SRC) $(SAM_SRC) $(PVG_SRC))) src
 
-.PHONY: sim test move package clean
+.PHONY: sim test move package clean core-test
 sim:
 	$(MAKE) TARGET=sim build/sim/egm-sim
 
@@ -57,8 +57,8 @@ test: sim
 DOCKER_IMAGE ?= evilgenius-move-build
 move:
 	docker build -q -t $(DOCKER_IMAGE) docker
-	docker run --rm -v "$(abspath .)":/w -v "$(abspath $(EG))":/eg -w /w $(DOCKER_IMAGE) \
-	    make TARGET=move EG=/eg CC=aarch64-linux-gnu-gcc NO_SAM=$(NO_SAM) build/move/evilgenius-host build/move/evilgenius-heal
+	docker run --rm -v "$(abspath .)":/w -w /w $(DOCKER_IMAGE) \
+	    make TARGET=move CC=aarch64-linux-gnu-gcc NO_SAM=$(NO_SAM) build/move/evilgenius-host build/move/evilgenius-heal
 
 package: move
 	scripts/package.sh
@@ -80,6 +80,16 @@ $(B)/pvg-%.o: %.c | $(B)
 # (the same DEFS as the core: its structs' layouts depend on them)
 $(B)/%.o: src/%.c $(wildcard src/*.h) Makefile | $(B)
 	$(CC) $(OPT) -std=gnu11 -Wall -Wextra $(INC) $(DEFS) -c $< -o $@
+
+# the core's own checks at the Move's sizes (core/tests/test_app.c: the app, the sequencer, clips), with the sanitizers
+core-test: build/core/test_app
+	build/core/test_app
+build/core/test_app: core/tests/test_app.c $(CORE_SRC) $(SAM_SRC) $(PVG_SRC) $(wildcard core/*/*.h core/*/*.c) Makefile
+	mkdir -p build/core
+	for f in $(SAM_SRC); do $(CC) -O1 -g -std=gnu99 -w $(INC) $(DEFS) -c $$f -o build/core/sam-$$(basename $$f .c).o || exit 1; done
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize=shift-base -fno-sanitize-recover=all -std=gnu99 -w \
+	    $(INC) $(DEFS) -o $@ core/tests/test_app.c $(CORE_SRC) $(PVG_SRC) $(patsubst %.c,build/core/sam-%.o,$(notdir $(SAM_SRC))) -lm
+# (SAM, the speech synthesizer, unsanitized: its phoneme rules read past a table, as in the s-macke original)
 
 clean:
 	rm -rf build dist

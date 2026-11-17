@@ -1,0 +1,1627 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+ * distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+/* The app with its sound (P1.1), driven as the glue drives it (core/app/app.h: input events, a tick a millisecond,
+ * the audio in 128-frame blocks as they fall due):
+ *   keys        the keybed plays the selected track (velocity, OCT- / OCT+ -2..+2), TRACKS + white key 1..8 selects
+ *               a track and plays nothing, the note a key struck is released at its release whatever changed since
+ *   presets     PRESETS steps the track's sound through the project's pool (INIT .. OPEN HAT, clamped; P1.3b), the
+ *               picker takes the screen and leaves 1.12 s after the last detent; a voice sounding keeps its patch
+ *   screens     REC toggles the keyboard (REC's LED lit; P1.3b), HOME: the step view; TRACKS held dims the selected
+ *               track's white key; the C keys faint in the keyboard; a note sounding lights its key
+ *   midi        notes on channels 1..8 play tracks 1..8; note off and velocity 0 release; channels 9..16 ignored
+ *   mix         a voice panned hard left with no sends: nothing on the right; level 0: silence
+ *   limiter     16 voices of SQUARE LEAD at velocity 127, every level and send at the top, MASTER full: no sample
+ *               above Output Clean's ceiling (CLN_T, 26000 at MASTER full) and the limiter at work; then released:
+ *               exact digital silence (the integer chain has no NaN and no denormal tail: it ends in zeros, the
+ *               voices free, the effects off)
+ *   panic       OCT- and OCT+ together: every voice gone within two blocks
+ *   determinism the same session twice: the same samples
+ * P1.2, the sequencer on the unit's controls:
+ *   play        A02 at power-on (100 BPM); PLAY plays it (its voices start, the dancers turn, PLAY's green LED on the
+ *               beat), PLAY again stops: the sequencer's notes released, a held key's note not
+ *   patterns    PATTERN + white key 1 while playing: queued (the screen's name blinks: two frames differ), taken
+ *               at the end of A02's master length (32 sixteenths), not before; PATTERN + FUNC + white key 3: at the
+ *               next 16th; stopped: at once; PATTERN held: the LEDs (playing lit, queued blinking, content dim); ARP held: FILL
+ *   tracks      TRACKS tapped: the tracks screen (its LED lit), white key 9 mutes track 1 (its notes stop, key 9's LED
+ *               goes dark), white key 2 selects track 2 (no note), the trigs flash white keys 1..8; TRACKS again or
+ *               HOME leaves; TRACKS held + white key still selects
+ *   along       the keyboard while playing: the keys play the selected track along
+ *   clock       MIDI START and 24 clocks a beat at 140 BPM: the transport runs at 140 (the dancers too), STOP stops
+ *   determinism a session with the sequencer (PLAY, a queued change, keys, MIDI clock) twice: the same samples
+ *
+ *     test_app      exit 1 on a failed check */
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include "../voice/sam/say.h"
+#include "../voice/fx/qd_fx.h"
+#include <string.h>
+
+#include "app.h"
+#include "qd_gfx.h"
+#include "ui.h"
+
+static int fails, checks;
+#define CHECK(c, ...)                                     \
+    do {                                                  \
+        checks++;                                         \
+        if (!(c)) {                                       \
+            fails++;                                      \
+            printf("  FAIL %s:%d: ", __FILE__, __LINE__); \
+            printf(__VA_ARGS__);                          \
+            printf("\n");                                 \
+        }                                                 \
+    } while (0)
+
+static qd_app_t A;
+static double app_beats(void) { return (double)A.beat + (double)A.beat_rem / (double)QD_BEAT_TICKS; }   /* (P2.4) */
+static uint32_t now, frames_done;
+static int32_t peak_l, peak_r;
+static uint64_t hash;
+static uint32_t over;                                   /* samples above a threshold (run's argument) */
+static int16_t last[256];
+
+/* n ms of the core's clock: a tick a ms, the audio blocks that fall due; the peaks, a hash, the samples over thr */
+static void run(uint32_t n, int thr)
+{
+    static uint16_t lcd[QD_W * QD_H];
+    while (n--) {
+        now++;
+        qd_app_tick(&A, now);
+        if (now % 15u == 0u)
+            qd_app_frame(&A, lcd);
+        while (frames_done + 128u <= (uint64_t)now * QD_FS / 1000u) {
+            int k;
+            qd_app_audio(&A, last, 128);
+            for (k = 0; k < 256; k++) {
+                const int32_t v = abs(last[k]);
+                if (k & 1)
+                    peak_r = v > peak_r ? v : peak_r;
+                else
+                    peak_l = v > peak_l ? v : peak_l;
+                over += thr && v > thr;
+                hash = (hash ^ (uint16_t)last[k]) * 1099511628211ull;
+            }
+            frames_done += 128u;
+        }
+    }
+}
+static void plain_mix(qd_app_t *a)       /* the default kit's mix (the demo comes with its own: demo.h
+                                          * qd_demo_model), so a check of the mix starts from the same place */
+{
+    static qd_model_t m;
+    int t;
+    qd_model_init(&m);
+    for (t = 0; t < QD_NTRACK; t++)
+        a->model.t[t].mix = m.t[t].mix;
+}
+static void fresh(void)
+{
+    qd_app_init(&A);
+    plain_mix(&A);
+    A.ui.view = QD_VIEW_ROLL;   /* (P1.5s: EDIT is the power-on view; made on the PIANO ROLL) */
+    now = frames_done = 0;
+    qd_app_tick(&A, 0);
+    peak_l = peak_r = 0;
+    hash = 14695981039346656037ull;
+    over = 0;
+}
+static void peaks0(void) { peak_l = peak_r = 0; }
+static void tap_button(int b);
+static void wake_up(void) { tap_button(QD_B_HOME); }   /* (2026-11-13: the press that wakes does nothing else) */
+static void fresh_keys(void)             /* power-on is the idle screen; REC (P1.3b): the keyboard plays the keybed */
+{
+    fresh();
+    wake_up();
+    tap_button(QD_B_REC);
+}
+static int voices_of(int track)          /* the track's voices held (gate) */
+{
+    int i, n = 0;
+    for (i = 0; i < A.pool.nvoice; i++)
+        n += qd_pool_sounding(&A.pool, i) && A.pool.v[i].track == track && A.pool.v[i].q.gate;
+    return n;
+}
+static int sounding(int track, int note)
+{
+    int i;
+    for (i = 0; i < A.pool.nvoice; i++)
+        if (qd_pool_sounding(&A.pool, i) && A.pool.v[i].track == track && A.pool.v[i].q.note == note && A.pool.v[i].q.gate)
+            return 1;
+    return 0;
+}
+static int vel_of(int track, int note)
+{
+    int i;
+    for (i = 0; i < A.pool.nvoice; i++)
+        if (qd_pool_sounding(&A.pool, i) && A.pool.v[i].track == track && A.pool.v[i].q.note == note)
+            return A.pool.v[i].q.vel;
+    return -1;
+}
+static void tap_button(int b)
+{
+    const int from = A.ui.mode;
+    qd_app_button(&A, b, 1);
+    run(20, 0);
+    qd_app_button(&A, b, 0);
+    run(20, 0);
+    if (b == QD_B_REC && from != QD_MODE_KEYS && A.ui.mode == QD_MODE_KEYS)
+        A.ui.ksteps = 0;                                /* (2026-11-13: from the Home views' steps REC opens the
+                                                         * keyboard page's STEPS (B11's one state, test_ctl's
+                                                         * g_b11_global); these scenarios play its keys, as before) */
+}
+
+static void t_keys(void)
+{
+    fresh_keys();
+    qd_app_key(&A, 9, 1, 100);                          /* D4 on track 1 (DRUMS) */
+    run(50, 0);
+    CHECK(sounding(0, 62) && peak_l > 64, "D4 should sound on track 1 (peak %d)", (int)peak_l);
+    qd_app_key(&A, 9, 0, 0);
+    run(5, 0);
+    CHECK(!sounding(0, 62), "D4 released");
+    tap_button(QD_B_OCTUP);
+    qd_app_key(&A, 0, 1, 90);                           /* F3 + an octave */
+    run(5, 0);
+    CHECK(A.oct == 1 && sounding(0, 65), "OCT+: F3 plays F4");
+    tap_button(QD_B_OCTDN);                             /* the octave changes under the held key */
+    qd_app_key(&A, 0, 0, 0);
+    run(5, 0);
+    CHECK(!sounding(0, 65), "the key's own note released after the octave changed");
+    tap_button(QD_B_OCTDN), tap_button(QD_B_OCTDN), tap_button(QD_B_OCTDN), tap_button(QD_B_OCTDN), tap_button(QD_B_OCTDN);
+    CHECK(A.oct == QD_OCT_MIN, "OCT- clamps at -4 (%d)", A.oct);
+    tap_button(QD_B_OCTUP), tap_button(QD_B_OCTUP), tap_button(QD_B_OCTUP), tap_button(QD_B_OCTUP);
+    /* TRACKS + white key 3 selects track 3 and plays nothing */
+    qd_app_button(&A, QD_B_TRACKS, 1);
+    qd_app_key(&A, 4, 1, 100);                          /* A3: the third white key */
+    run(10, 0);
+    CHECK(A.sel == 2 && !voices_of(0) && !voices_of(2), "TRACKS + white key 3: track 3 selected, nothing played");
+    {
+        qd_leds_t l;
+        qd_app_leds(&A, &l);
+        CHECK(l.key[4] == QD_LED_LIT && l.button[QD_B_TRACKS] == QD_LED_LIT, "TRACKS held: its LED, the key held lit");
+        qd_app_key(&A, 4, 0, 0);
+        qd_app_leds(&A, &l);
+        CHECK(l.key[4] >= QD_LED_DIM, "TRACKS held: the selected track's white key at least dim (%d)", l.key[4]);
+    }
+    qd_app_button(&A, QD_B_TRACKS, 0);
+    qd_app_key(&A, 7, 1, 127);                          /* C4 on track 3 (KEYS) */
+    run(10, 0);
+    CHECK(sounding(2, 60) && vel_of(2, 60) == 127, "track 3 plays C4 at velocity 127");
+    qd_app_key(&A, 7, 0, 0);
+    run(10, 0);
+    printf("  keys: the keybed plays the selected track; OCT -2..+2; TRACKS + white key selects\n");
+}
+
+/* EvilGenius: SAY, SAM speaking live: a track's random word rendered in the app's free time (not the audio), its
+ * voice speaking exactly those samples, the same every render; another voice a word of its own */
+static void t_say(void)
+{
+    int16_t p[QD_QUAD_NP];
+    char w[16];
+    const uint8_t *d, *d2;
+    uint32_t n = 0, n2 = 0;
+    uint8_t first[64];
+    int i, spoke = 0;
+    fresh_keys();
+    A.model.t[0].patch[QD_QP_SAY] = 7;
+    qd_proj_pat(&A.proj, A.seq.cur)->snd[0].patch[QD_QP_SAY] = 7;
+    qd_say_text(7, w);
+    run(40, 0);                                         /* (the free time's look: SAM renders it) */
+    memcpy(p, A.model.t[0].patch, sizeof p);
+    d = qd_say_get(qd_say_key(p), &n);
+    CHECK(d && n > 600 && n <= QD_VOX_FS * QD_SAY_TENTHS / 10, "SAY: SAM rendered track 1's random word \"%s\" (%u "
+          "samples at %u Hz)", w, n, QD_VOX_FS);
+    memcpy(first, d ? d : first, sizeof first);
+    qd_app_key(&A, 7, 1, 100);
+    run(30, 0);
+    for (i = 0; i < A.pool.nvoice; i++)
+        spoke |= qd_pool_sounding(&A.pool, i) && A.pool.v[i].q.vox.on && A.pool.v[i].q.vox.src == d &&
+                 A.pool.v[i].q.vox.len == n;
+    qd_app_key(&A, 7, 0, 0);
+    run(10, 0);
+    CHECK(spoke, "a note on track 1: its voice speaks those samples");
+    qd_say_reset();                                     /* rendered again: the same */
+    qd_say_want(p);
+    d2 = qd_say_get(qd_say_key(p), &n2);
+    CHECK(d2 && n2 == n && !memcmp(d2, first, sizeof first), "SAM renders the same word the same every time");
+    p[QD_QP_SPIT] = 100, p[QD_QP_SSPD] = 110;          /* another voice: a word of its own, longer (slower) */
+    qd_say_want(p);
+    d2 = qd_say_get(qd_say_key(p), &n2);
+    CHECK(d2 && n2 > n, "another voice (PITCH 100, SPEED 110): its own render, longer (%u > %u samples)", n2, n);
+    printf("  say: SAM speaks \"%s\" live, %u samples; slower, %u\n", w, n, n2);
+}
+
+/* EvilGenius: the word through the filter (FILTER's ROUTE with V, a mode on: the chip's EXT IN): as loud as the volume
+ * register's digi with the filter open, quieter with it closed; without V it is the digi again, the filter passed by */
+static void vox_set(int id, int v)
+{
+    A.model.t[0].patch[id] = (int16_t)v;
+    qd_proj_pat(&A.proj, A.seq.cur)->snd[0].patch[id] = (int16_t)v;
+}
+static double vox_hf;                                   /* (the last run's treble: the energy of its sample-to-sample steps) */
+static double vox_energy(int ftype, int freq, int route, int *filt)
+{
+    double e = 0., hf = 0.;
+    int32_t prev = 0;
+    uint32_t ms;
+    int k, i;
+    fresh_keys();
+    A.ui.voice_mode = QD_VOICE_OFF;                     /* (no welcome over it) */
+    qd_ann_stop();
+    vox_set(QD_QP_W1, QD_SW_OFF), vox_set(QD_QP_W2, QD_SW_OFF), vox_set(QD_QP_W3, QD_SW_OFF);
+    vox_set(QD_QP_WORD, 1), vox_set(QD_QP_SAY, 0);
+    vox_set(QD_QP_FTYPE, ftype), vox_set(QD_QP_FREQ, freq), vox_set(QD_QP_RESO, 0), vox_set(QD_QP_FROUTE, route);
+    vox_set(QD_QP_FDEPTH, 64), vox_set(QD_QP_FKTRK, 0);
+    run(60, 0);
+    qd_app_key(&A, 7, 1, 100);
+    *filt = 0;
+    for (ms = 0; ms < 400; ms++) {
+        qd_app_tick(&A, ++now);
+        while (frames_done + 128u <= (uint64_t)now * QD_FS / 1000u) {
+            qd_app_audio(&A, last, 128);
+            frames_done += 128u;
+            for (k = 0; k < 256; k += 2) {
+                e += (double)last[k] * (double)last[k];
+                hf += (double)(last[k] - prev) * (double)(last[k] - prev);
+                prev = last[k];
+            }
+        }
+        for (i = 0; i < A.pool.nvoice; i++)
+            *filt |= qd_pool_sounding(&A.pool, i) && A.pool.v[i].q.vox.on && A.pool.v[i].q.vox.filt;
+    }
+    qd_app_key(&A, 7, 0, 0);
+    run(60, 0);
+    vox_hf = sqrt(hf);
+    return sqrt(e);
+}
+static void t_vox_filter(void)
+{
+    int f0, f1, f2, f3;
+    double dry, open, shut, by, hf_dry, hf_open, hf_shut, hf_by;
+    dry = vox_energy(QD_QF_OFF, 1000, 15, &f0), hf_dry = vox_hf;
+    open = vox_energy(QD_QF_LP, 2047, 15, &f1), hf_open = vox_hf;
+    shut = vox_energy(QD_QF_LP, 40, 15, &f2), hf_shut = vox_hf;
+    by = vox_energy(QD_QF_LP, 40, 7, &f3), hf_by = vox_hf;
+    CHECK(dry > 1000. && !f0, "VOX, the filter off: the word is the volume register's digi (energy %.0f)", dry);
+    CHECK(f1 && open > dry * 0.4 && open < dry * 2.5, "ROUTE with V, LOWPASS wide open: through the filter, about as "
+          "loud (%.0f against %.0f)", open, dry);
+    CHECK(f2 && hf_shut < hf_open * 0.4 && hf_shut < hf_dry * 0.4, "the cutoff down: the word's treble goes (%.0f "
+          "against %.0f open, %.0f the digi)", hf_shut, hf_open, hf_dry);
+    CHECK(!f3 && by > dry * 0.85 && by < dry * 1.15 && hf_by > hf_dry * 0.85, "ROUTE without V: the digi again, past "
+          "the filter (%.0f against %.0f)", by, dry);
+    printf("  vox filter: digi %.0f (treble %.0f), lowpass open %.0f (%.0f), shut %.0f (%.0f), bypassed %.0f (%.0f)\n",
+           dry, hf_dry, open, hf_open, shut, hf_shut, by, hf_by);
+}
+
+/* EvilGenius: a track's send into a room (CRUSH here) is that track's alone: another track's send changes nothing of
+ * a note on track 1; track 1's own send puts it through the room */
+static double room_energy(int track, int send, int bits, int rate)
+{
+    double e = 0.;
+    uint32_t ms;
+    int k;
+    fresh_keys();
+    A.ui.voice_mode = QD_VOICE_OFF;
+    qd_ann_stop();
+    qd_fx_set(QD_FXP_XBITS, bits), qd_fx_set(QD_FXP_XRATE, rate);
+    run(60, 0);
+    A.model.t[track].mix.room[0] = (uint8_t)send;
+    run(20, 0);
+    qd_app_key(&A, 7, 1, 100);
+    for (ms = 0; ms < 300; ms++) {
+        qd_app_tick(&A, ++now);
+        while (frames_done + 128u <= (uint64_t)now * QD_FS / 1000u) {
+            qd_app_audio(&A, last, 128);
+            frames_done += 128u;
+            for (k = 0; k < 256; k += 2)
+                e += (double)last[k] * (double)last[k];
+        }
+    }
+    qd_app_key(&A, 7, 0, 0);
+    run(60, 0);
+    return sqrt(e);
+}
+static void t_rooms(void)
+{
+    const double none = room_energy(0, 0, 2, 6), other = room_energy(1, 127, 2, 6), own = room_energy(0, 127, 2, 6);
+    const double clean = room_energy(0, 127, 16, 0);   /* (CRUSH at 16 bits, every sample: it changes nothing) */
+    CHECK(none > 1000. && other == none, "a room's send on track 2: a note on track 1 is as without it (%.0f, %.0f)",
+          other, none);
+    CHECK(own > 1000. && fabs(own - none) > none * 0.02, "track 1's own send into CRUSH: its note goes through the room "
+          "(%.0f against %.0f)", own, none);
+    CHECK(clean > none * 0.8 && clean < none * 1.25, "all of a track through a room that changes nothing: as loud as "
+          "dry (%.0f against %.0f)", clean, none);
+    printf("  rooms: track 1 dry %.0f, with track 2's send %.0f, through CRUSH %.0f, through a clean room %.0f\n", none,
+           other, own, clean);
+}
+
+/* EvilGenius: a room's send locked on a step: that step's note goes through the room, the track's other steps do
+ * not (the voice carries the lock, as a send's) */
+static double lock_energy(int lock, int *locked_voice)
+{
+    double e = 0.;
+    uint32_t ms;
+    int k, i;
+    fresh();
+    tap_button(QD_B_HOME);
+    A.ui.voice_mode = QD_VOICE_OFF;
+    qd_ann_stop();
+    qd_fx_set(QD_FXP_XBITS, 2), qd_fx_set(QD_FXP_XRATE, 6);
+    run(60, 0);
+    qd_seq_select(&A.seq, 1, 0);                        /* A02: the kick on step 1 (A01, the intro, has no drums) */
+    if (lock)
+        qd_lock_set(qd_proj_pat(&A.proj, A.seq.cur), 0, 0, QD_LK_CRUSH, 127);
+    qd_app_play(&A);
+    *locked_voice = 0;
+    for (ms = 0; ms < 500; ms++) {
+        qd_app_tick(&A, ++now);
+        while (frames_done + 128u <= (uint64_t)now * QD_FS / 1000u) {
+            qd_app_audio(&A, last, 128);
+            frames_done += 128u;
+            for (k = 0; k < 256; k += 2)
+                e += (double)last[k] * (double)last[k];
+        }
+        for (i = 0; i < A.pool.nvoice; i++)
+            *locked_voice |= qd_pool_sounding(&A.pool, i) && A.pool.v[i].track == 0 &&
+                             (A.pool.v[i].at.mixm >> QD_VMIX_ROOM & 1u) && A.pool.v[i].at.mixv[QD_VMIX_ROOM] == 127;
+    }
+    return sqrt(e);
+}
+static void t_room_locks(void)
+{
+    int v0, v1;
+    const double plain = lock_energy(0, &v0), locked = lock_energy(1, &v1);
+    CHECK(plain > 1000. && !v0, "the demo, no lock: no voice carries a room's send (energy %.0f)", plain);
+    CHECK(v1 && fabs(locked - plain) > plain * 0.01, "CRUSH's send locked on step 1 of track 1: its voice carries the "
+          "lock and the pattern sounds different (%.0f against %.0f)", locked, plain);
+    printf("  room locks: the demo %.0f, with step 1 through CRUSH %.0f\n", plain, locked);
+}
+
+static void t_presets(void)
+{
+    int16_t before[QD_QUAD_NP];
+    int i, v = -1;
+    fresh_keys();
+    qd_app_key(&A, 7, 1, 100);                          /* a note on track 1 */
+    run(20, 0);
+    for (i = 0; i < A.pool.nvoice; i++)
+        if (qd_pool_sounding(&A.pool, i))
+            v = i;
+    memcpy(before, A.model.t[0].patch, sizeof before);
+    qd_app_knob(&A, QD_K_PRESETS, 1);                   /* P1.5t: the library browser, on ZAP (preset 9) .. */
+    run(300, 0);                                        /* (no acceleration) */
+    qd_app_knob(&A, QD_K_PRESETS, 2);                   /* .. -> CHIP CHOIR (11), the track plays it */
+    run(10, 0);
+    CHECK(A.ui.latch == QD_LATCH_BROWSE && A.model.t[0].preset == 11 &&
+              !strcmp(qd_track_sound_name(&A.model.t[0]), "CHIP CHOIR"),
+          "PRESETS: the browser; +2: track 1 plays %d (%s)", A.model.t[0].preset, qd_track_sound_name(&A.model.t[0]));
+    CHECK(v >= 0 && !memcmp(A.pool.v[v].q.patch, before, sizeof before), "the sounding voice keeps its patch");
+    qd_app_knob(&A, QD_K_PRESETS, 200);                 /* (0.2: the second set after the kit) */
+    CHECK(!strcmp(qd_track_sound_name(&A.model.t[0]), "DENIED"), "PRESETS clamps at the last preset");
+    qd_app_knob(&A, QD_K_PRESETS, -200);
+    CHECK(!strcmp(qd_track_sound_name(&A.model.t[0]), "INIT"), "PRESETS clamps at INIT");
+    qd_app_button(&A, QD_B_OCTDN, 1);
+    run(20, 0);
+    qd_app_button(&A, QD_B_OCTDN, 0);
+    run(20, 0);
+    CHECK(!A.ui.latch && A.ui.mode == QD_MODE_KEYS && !memcmp(A.model.t[0].patch, before, sizeof before) &&
+              A.ui.tk == QD_TK_BACK, "F1: cancelled, its own sound back, the keyboard again");
+    qd_app_key(&A, 7, 0, 0);
+    printf("  presets: PRESETS browses the library, INIT .. OPEN HAT (clamped); F1 back; voices keep theirs\n");
+}
+
+static void t_screens(void)
+{
+    qd_leds_t l;
+    fresh();
+    wake_up();
+    tap_button(QD_B_REC);
+    qd_app_leds(&A, &l);
+    CHECK(A.ui.mode == QD_MODE_KEYS && l.button[QD_B_REC] == QD_LED_LIT, "REC: the keyboard, REC's LED lit (its page; 2026-10-25) (P1.6g: lit "
+          "while recording)");
+    CHECK(l.key[7] == QD_LED_ROOT && l.key[19] == QD_LED_ROOT && l.key[8] == QD_LED_SCALE,
+          "the keyboard: the scale lit (chromatic on C: the C keys 80 %%, the rest 50 %%; P1.5b)");
+    qd_app_midi(&A, 0x90, 64, 100);                     /* E4 from MIDI on track 1 (selected): its key lit */
+    run(10, 0);
+    qd_app_leds(&A, &l);
+    CHECK(l.key[11] == QD_LED_LIT, "a note sounding on the track lights its key (%d)", l.key[11]);
+    qd_app_midi(&A, 0x80, 64, 0);
+    tap_button(QD_B_REC);
+    CHECK(A.ui.mode == QD_MODE_KEYS && A.ui.rec, "REC again (2026-11-10): the keyboard records (armed)");
+    tap_button(QD_B_REC);
+    CHECK(A.ui.mode == QD_MODE_KEYS && !A.ui.rec, ".. again: disarmed, still the keyboard");
+    tap_button(QD_B_HOME);
+    qd_app_leds(&A, &l);
+    CHECK(A.ui.mode == QD_MODE_STEP && l.button[QD_B_REC] == QD_LED_OFF, "HOME: the step view, REC's LED off");
+    printf("  screens: REC the keyboard (lit; there a tap records), HOME: the step view; C keys faint; sounding notes light their "
+           "keys\n");
+}
+
+static void t_midi(void)
+{
+    fresh();
+    qd_app_midi(&A, 0x94, 60, 90);                      /* channel 5: track 5 */
+    qd_app_midi(&A, 0x95, 72, 90);                      /* channel 6: track 6 */
+    qd_app_midi(&A, 0x90 | QD_TRACKS, 51, 90);          /* the channel past the last track: none (the Move: 9) */
+    run(10, 0);
+    CHECK(sounding(4, 60) && sounding(5, 72) && qd_pool_in_use(&A.pool) == 2, "MIDI channels 5 and 6 -> tracks 5 and 6, "
+          "the channel past the last track ignored (%d voices)", qd_pool_in_use(&A.pool));
+    qd_app_midi(&A, 0x84, 60, 0);
+    qd_app_midi(&A, 0x95, 72, 0);                       /* velocity 0: off */
+    qd_app_midi(&A, 0x86, 50, 0);
+    qd_app_midi(&A, 0x88, 51, 0);
+    run(5, 0);
+    CHECK(!sounding(4, 60) && !sounding(5, 72), "note off and velocity 0 release");
+    /* P1.6g: channel 15 the selected track (notes and controllers; FIZZ MIDI (a): was 16); a track's MIDI CH set by
+     * hand: that channel */
+    qd_ctl_select_track(&A, 2);
+    qd_app_midi(&A, 0x9E, 64, 90);
+    qd_app_midi(&A, 0xBE, 1, 99);
+    run(10, 0);
+    CHECK(sounding(2, 64) && A.model.t[2].owner.mw == 99 && A.model.t[0].owner.mw != 99,
+          "channel 15: the selected track (3): its note, its MOD WHEEL");
+    qd_ctl_select_track(&A, 5);                         /* (selected another while the note sounds: its OFF still goes
+                                                         * to track 3) */
+    qd_app_midi(&A, 0x8E, 64, 0);
+    run(5, 0);
+    CHECK(!sounding(2, 64), "its note off: to the track it struck");
+    qd_proj_pat(&A.proj, A.seq.cur)->trk[4].chan = 9;              /* track 5 on channel 10 by hand */
+    qd_app_midi(&A, 0x99, 55, 90);
+    qd_app_midi(&A, 0x94, 57, 90);
+    run(10, 0);
+    CHECK(sounding(4, 55) && !sounding(4, 57), "track 5 set to channel 10: channel 10 plays it, channel 5 no more");
+    qd_app_midi(&A, 0x89, 55, 0);
+    qd_app_midi(&A, 0x84, 57, 0);
+    printf("  midi: channels 1..6 play tracks 1..6 (their MIDI CH), channel 15 the selected track\n");
+}
+
+/* P1.6c: MIDI in through the track's group, CC 123 its notes off, recording pre-FX by design (ctl_rec takes the
+ * played note); the groups' edits an undo level */
+static void t_mfx(void)
+{
+    qd_pattern_t *P;
+    fresh();
+    run(5, 0);
+    P = qd_proj_pat(&A.proj, A.seq.cur);
+    P->trk[4].mfx = 2;
+    qd_mfx_slot_init(&A.proj.mfx[1].slot[0], QD_MFX_TRANSPOSE);
+    A.proj.mfx[1].slot[0].v[QD_MT_SEMI] = 7, A.proj.mfx[1].slot[0].v[QD_MT_OCT] = 0;
+    qd_mfx_slot_init(&A.proj.mfx[1].slot[1], QD_MFX_HARM);
+    qd_app_midi(&A, 0x94, 60, 90);                      /* channel 5: track 5, through group 2 */
+    run(5, 0);
+    CHECK(sounding(4, 67) && sounding(4, 74) && sounding(4, 79) && !sounding(4, 60), "MIDI in through track 5's group 2: "
+          "TRANSPOSE +7, then HARM (+7, +12): 67 74 79");
+    qd_app_midi(&A, 0x84, 60, 0);
+    run(5, 0);
+    CHECK(!voices_of(4), "its note off: all three released");
+    A.proj.mfx[1].slot[1].v[QD_MH_N2] = 0, A.proj.mfx[1].slot[1].v[QD_MH_N3] = 0;
+    qd_mfx_slot_init(&A.proj.mfx[1].slot[0], QD_MFX_ARP);
+    A.proj.mfx[1].slot[0].v[QD_MA_MODE] = QD_AM_HOLD;
+    qd_app_midi(&A, 0x94, 60, 90);
+    qd_app_midi(&A, 0x84, 60, 0);
+    run(400, 0);
+    CHECK(qd_mfx_arp_playing(&A.player.mfx, 2), "an ARP latched (HOLD) on MIDI in, stopped: it plays on the tempo");
+    qd_app_midi(&A, 0xB4, 123, 0);                      /* ALL NOTES OFF on channel 5 */
+    run(300, 0);
+    CHECK(!voices_of(4) && !qd_mfx_busy(&A.player.mfx, 2), "ALL NOTES OFF: the group's notes out too");
+    /* undo: a group's edit */
+    run(QD_UNDO_QUIET_MS + 10, 0);
+    qd_undo_input(&A, 0);
+    qd_mfx_slot_init(&A.proj.mfx[3].slot[5], QD_MFX_CHORD);
+    qd_undo_close(&A);
+    qd_undo_step(&A, -1);
+    CHECK(A.proj.mfx[3].slot[5].type == QD_MFX_NONE, "undo: the CHORD added to group 4 gone");
+    qd_undo_step(&A, 1);
+    CHECK(A.proj.mfx[3].slot[5].type == QD_MFX_CHORD, "redo: back");
+    printf("  mfx: MIDI in through a group, ALL NOTES OFF, undo\n");
+}
+
+static void t_mult_order(void)                          /* 2026-11-14 (owner): MULT turns fastest to slowest */
+{
+    static const char *const WANT[12] = {"FREE", "1/128", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1 BAR",
+                                         "2 BAR", "4 BAR", "8 BAR"};
+    const int id = QD_QP_LFO(0, QD_QL_MULT);
+    char buf[16];
+    int v = 0, i, ok = 1;
+    for (i = 0; i < 12; i++) {
+        ok &= !strcmp(qd_quad_value_text(id, v, buf), WANT[i]);
+        v = qd_quad_mult_step(v, 1);
+    }
+    CHECK(ok && qd_quad_mult_step(v, 5) == v, "MULT, a detent at a time: FREE, 1/128 .. 8 BAR, and stops there");
+    CHECK(qd_quad_mult_step(qd_quad_mult_step(3, -2), 2) == 3 && qd_quad_mult_step(0, -1) == 0,
+          "MULT back and forth comes home; FREE is the first");
+    printf("  MULT: FREE, 1/128, 1/64, 1/32 .. 8 BAR\n");
+}
+static void t_mix(void)
+{
+    qd_track_t *t;
+    fresh();
+    t = &A.model.t[2];
+    t->mix.pan = -64;
+    t->mix.reverb = t->mix.delay = t->mix.chorus = 0;
+    qd_app_midi(&A, 0x92, 60, 110);
+    peaks0();
+    run(400, 0);
+    CHECK(peak_l > 1000 && peak_r == 0, "pan hard left, no sends: left %d, right %d", (int)peak_l, (int)peak_r);
+    qd_app_midi(&A, 0x82, 60, 0);
+    run(2000, 0);
+    t->mix.level = 0;
+    qd_app_midi(&A, 0x92, 62, 110);
+    peaks0();
+    run(400, 0);
+    CHECK(peak_l == 0 && peak_r == 0, "level 0: silence (%d, %d)", (int)peak_l, (int)peak_r);
+    printf("  mix: pan and level per voice (hard left: the right silent; level 0: nothing)\n");
+}
+
+static void t_limiter(void)
+{
+    static const int CH[QD_NTRACK][3] = {{36, 48, 43}, {40, 52, 47}, {55, 59, 57}, {62, 66, 64}, {69, 72, 74},
+                                         {76, 79, 83}};   /* (six tracks: three notes each, 18 on 16 voices) */
+    int t, k, zero_tail;
+    uint32_t n_over;
+    fresh();
+    qd_app_master(&A, 1023);
+    for (t = 0; t < QD_NTRACK; t++) {
+        qd_track_load_preset(&A.model.t[t], 8);         /* SQUARE LEAD */
+        A.model.t[t].mix.level = 127;
+        A.model.t[t].mix.chorus = A.model.t[t].mix.delay = A.model.t[t].mix.reverb = 127;
+        qd_pool_set_track(&A.pool, t, 16, 0);
+    }
+    for (t = 0; t < QD_NTRACK; t++)
+        for (k = 0; k < 3; k++)
+            qd_app_midi(&A, 0x90 | t, CH[t][k], 127);
+    peaks0();
+    run(3000, 26000);
+    n_over = over;
+    over = 0;
+    CHECK(qd_pool_in_use(&A.pool) == (A.pool.nvoice < 16 ? A.pool.nvoice : 16), "16 notes on %d voices: all in use (%d)",
+          A.pool.nvoice, qd_pool_in_use(&A.pool));
+    CHECK(n_over == 0 && peak_l <= 26000 && peak_r <= 26000, "Output Clean's ceiling: %u samples above 26000, peaks %d %d",
+          (unsigned)n_over, (int)peak_l, (int)peak_r);
+    CHECK(peak_l > 24000 || peak_r > 24000, "the limiter at work: peaks %d %d", (int)peak_l, (int)peak_r);
+    printf("  limiter: 16 voices at full level, every send up, MASTER full: peaks %d / %d, none above 26000\n",
+           (int)peak_l, (int)peak_r);
+    for (t = 0; t < QD_NTRACK; t++)
+        qd_app_midi(&A, 0xB0 | t, 123, 0);              /* all notes off */
+    run(9000, 0);
+    peaks0();
+    run(1000, 0);
+    zero_tail = peak_l == 0 && peak_r == 0;
+    CHECK(zero_tail && qd_pool_in_use(&A.pool) == 0, "after the release: exact silence (%d %d), voices %d", (int)peak_l,
+          (int)peak_r, qd_pool_in_use(&A.pool));
+    printf("  tails: 9 s after the release the chain gives exact zeros and every voice is free\n");
+}
+
+static void t_panic(void)
+{
+    int k;
+    fresh_keys();
+    for (k = 0; k < 10; k++)
+        qd_app_midi(&A, 0x90 | (k % 8), 50 + k, 100);
+    run(50, 0);
+    qd_app_button(&A, QD_B_OCTDN, 1);
+    qd_app_button(&A, QD_B_OCTUP, 1);
+    run(10, 0);                                         /* (the fade's block, then free) */
+    CHECK(qd_pool_in_use(&A.pool) == 0 && A.oct == -1, "PANIC: voices %d, octave %d", qd_pool_in_use(&A.pool), A.oct);
+    printf("  panic: OCT- and OCT+ together: every voice gone at once (faded over a block)\n");
+}
+
+/* ---------------------------------------------------------------- P1.2 --- */
+static const uint8_t WK[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* white keys */
+static void tap_key(int key)
+{
+    qd_app_key(&A, key, 1, 100);
+    run(10, 0);
+    qd_app_key(&A, key, 0, 0);
+    run(10, 0);
+}
+static int seq_voices(void)              /* voices held (gate) on any track */
+{
+    int i, n = 0;
+    for (i = 0; i < A.pool.nvoice; i++)
+        n += qd_pool_sounding(&A.pool, i) && A.pool.v[i].q.gate;
+    return n;
+}
+static uint64_t frame_hash(void)
+{
+    static uint16_t lcd[QD_W * QD_H];
+    uint64_t h = 14695981039346656037ull;
+    int i;
+    qd_app_frame(&A, lcd);
+    for (i = 0; i < QD_W * QD_H; i++)
+        h = (h ^ lcd[i]) * 1099511628211ull;
+    return h;
+}
+
+/* P2.1: the frame strip by strip (qd_app_frame_strips: the device's LCD, no whole frame in RAM): the same pixels as
+ * the whole frame, the strips in order, covering the screen */
+static uint16_t strip_lcd[QD_W * QD_H];
+static int strip_next, strip_bad;
+static void strip_out(void *ctx, int y0, int rows, const uint16_t *px)
+{
+    (void)ctx;
+    strip_bad += y0 != strip_next || rows < 1;
+    memcpy(strip_lcd + (size_t)y0 * QD_W, px, (size_t)rows * QD_W * sizeof px[0]);
+    strip_next = y0 + rows;
+}
+static void t_strips(void)
+{
+    static uint16_t lcd[QD_W * QD_H], strip[QD_W * QD_STRIP_H];
+    int i, n = 0;
+    fresh();
+    run(500, 1);
+    qd_app_frame(&A, lcd);
+    strip_next = strip_bad = 0;
+    qd_app_frame_strips(&A, strip, strip_out, 0);
+    for (i = 0; i < QD_W * QD_H; i++)
+        n += lcd[i] != strip_lcd[i];
+    CHECK(!n && !strip_bad && strip_next == QD_H, "P2.1: the frame in strips of %d rows out one by one: the whole "
+          "frame's pixels (%d differ)", QD_STRIP_H, n);
+    memset(strip_lcd, 0, sizeof strip_lcd);
+    strip_next = strip_bad = n = 0;
+    qd_app_frame_strips(&A, 0, strip_out, 0);           /* (P2.1b: in place, in the core's own strip surface) */
+    for (i = 0; i < QD_W * QD_H; i++)
+        n += lcd[i] != strip_lcd[i];
+    CHECK(!n && !strip_bad && strip_next == QD_H, "P2.1b: .. in place, in the core's own strip: the same (%d differ)",
+          n);
+}
+
+#ifdef QD_GFX_FB
+/* P2.6f: the 8-bit frame drawn a few bands at a time, the clock and the panel moving between: the frame is the instant
+ * its begin took (the same as drawn at once there) */
+static void t_fb_steps(void)
+{
+    static uint8_t f1[QD_W * QD_H], f2[QD_W * QD_H];
+    static uint8_t *rows[QD_H];
+    uint32_t bands;
+    int y, left, steps = 0, n = 0;
+    for (y = 0; y < QD_H; y++)
+        rows[y] = f1 + (size_t)y * QD_W;
+    fresh();
+    qd_app_fb_attach(&A, rows);
+    run(700, 1);
+    qd_app_play(&A);
+    run(300, 1);
+    qd_app_frame_fb_begin(&A, &bands);
+    do {
+        left = qd_app_frame_fb_step(&A, 2);
+        steps++;
+        for (y = 0; y < 9; y++) {                       /* (time passes, the music moves, between the steps: no
+                                                         * other frame drawn) */
+            qd_app_tick(&A, ++now);
+            qd_app_audio(&A, last, 64);
+        }
+    } while (left);
+    for (y = 0; y < QD_H; y++)
+        rows[y] = f2 + (size_t)y * QD_W;
+    fresh();
+    qd_app_fb_attach(&A, rows);
+    run(700, 1);
+    qd_app_play(&A);
+    run(300, 1);
+    qd_app_frame_fb(&A, &bands);
+    for (y = 0; y < QD_W * QD_H; y++)
+        n += f1[y] != f2[y];
+    {   /* .. and latched, its bands drawn from the pinned list in reverse order (as another core would), the clock
+         * and an arena borrower in between */
+        uint32_t todo, ch;
+        int k, n2 = 0;
+        void *b;
+        static uint8_t f3[QD_W * QD_H];
+        for (y = 0; y < QD_H; y++)
+            rows[y] = f3 + (size_t)y * QD_W;
+        fresh();
+        qd_app_fb_attach(&A, rows);
+        run(700, 1);
+        qd_app_play(&A);
+        run(300, 1);
+        todo = qd_app_frame_fb_latch(&A, &ch);
+        b = qd_pat_borrow();                            /* (the main loop's borrower: it may not take the list) */
+        for (k = 14; k >= 0; k--) {
+            if ((todo >> k) & 1u)
+                qd_app_frame_fb_band(k);
+            qd_app_tick(&A, ++now);
+        }
+        if (b)
+            qd_pat_return(b);
+        qd_app_frame_fb_done(&A);
+        for (y = 0; y < QD_W * QD_H; y++)
+            n2 += f3[y] != f2[y];
+        CHECK(todo && todo == ch && !n2, "P2.6f: latched, its bands drawn in reverse from the pinned list, a borrower "
+              "and the clock between: the same frame (%d pixels differ)", n2);
+    }
+    CHECK(bands && steps == 8 && !n, "P2.6f: the frame two bands a step (%d steps), time passing between: the begin's "
+          "instant (%d pixels differ from it drawn at once)", steps, n);
+}
+#endif
+
+#ifdef QD_GFX_FB
+/* P2.6f: the changed bands only, frame after frame on the same frame (the port's way), against every band drawn from
+ * the same instant: the same pixels. Screens: the idle logo, EDIT and the PIANO ROLL playing the demo, a held step,
+ * the keyboard, the TAP ape, the Geek Out pages */
+static uint8_t fbA[QD_W * QD_H], fbB[QD_W * QD_H];
+static uint8_t *rowsA[QD_H], *rowsB[QD_H];
+static int fb_bad_frames, fb_frames, fb_first_bad = -1, fb_bad_px, fb_bad_y0 = 999, fb_bad_y1 = -1;
+static void fb_check(void)                              /* (one instant: its list; every band drawn from it into B, the
+                                                         * changed ones also into A, which keeps the others from before) */
+{
+    uint32_t m;
+    int i, k, n = 0;
+    qd_app_frame_fb_begin(&A, &m);
+    A.fb_pending = (1u << ((QD_H + QD_STRIP_H - 1) / QD_STRIP_H)) - 1u;
+    qd_fb_attach(rowsB);
+    qd_app_frame_fb_step(&A, 32);
+    for (k = 0; k < 15; k++)
+        if ((m >> k) & 1u)
+            memcpy(fbA + k * 16 * QD_W, fbB + k * 16 * QD_W, 16 * QD_W);
+    for (i = 0; i < QD_W * QD_H; i++)
+        if (fbA[i] != fbB[i]) {
+            n++;
+            fb_bad_y0 = i / QD_W < fb_bad_y0 ? i / QD_W : fb_bad_y0;
+            fb_bad_y1 = i / QD_W > fb_bad_y1 ? i / QD_W : fb_bad_y1;
+        }
+    fb_frames++;
+    if (n && getenv("FBDBG") && fb_bad_frames < 3) {
+        int b;
+        printf("    frame at %u ms: drawn bands %05x; differing bands:", (unsigned)now, (unsigned)m);
+        for (b = 0; b < 15; b++) {
+            int c = 0, x;
+            for (x = b * 16 * QD_W; x < (b + 1) * 16 * QD_W; x++)
+                c += fbA[x] != fbB[x];
+            if (c)
+                printf(" %d(%d)", b, c);
+        }
+        printf("; screen %d view %d\n", qd_view_screen(&A), A.ui.view);
+    }
+    if (n) {
+        fb_bad_frames++, fb_bad_px += n;
+        if (fb_first_bad < 0)
+            fb_first_bad = (int)now;
+        memcpy(fbA, fbB, sizeof fbA);                   /* (from the truth again: each frame's own error counted) */
+    }
+}
+static void fb_run(uint32_t ms)                         /* ms of the clock and the audio, a checked frame every 33 */
+{
+    while (ms--) {
+        qd_app_tick(&A, ++now);
+        while (frames_done + 128u <= (uint64_t)now * QD_FS / 1000u) {
+            qd_app_audio(&A, last, 128);
+            frames_done += 128u;
+        }
+        if (now % 33u == 0u)
+            fb_check();
+    }
+}
+static void t_fb_bands(void)
+{
+    int y, k;
+    for (y = 0; y < QD_H; y++)
+        rowsA[y] = fbA + (size_t)y * QD_W, rowsB[y] = fbB + (size_t)y * QD_W;
+    fresh();
+    qd_app_fb_attach(&A, rowsB);
+    fb_run(1500);                                       /* the idle logo */
+    tap_button(QD_B_HOME);
+    qd_app_show(&A, QD_MODE_STEP, QD_VIEW_EDIT);
+    fb_run(500);                                        /* EDIT */
+    qd_app_play(&A);
+    fb_run(3000);                                       /* .. playing the demo */
+    for (k = 1; k < 4; k++) {                           /* .. other tracks (their pictures), a step held there */
+        qd_app_key(&A, QD_WHITE_KEY[k], 1, 100);
+        fb_run(400);
+        qd_app_knob(&A, QD_K_ALGO, 2);
+        fb_run(300);
+        qd_app_key(&A, QD_WHITE_KEY[k], 0, 0);
+        fb_run(600);
+    }
+    qd_app_show(&A, QD_MODE_STEP, QD_VIEW_STEPS);
+    fb_run(1500);                                       /* STEPS */
+    qd_app_show(&A, QD_MODE_STEP, QD_VIEW_ROLL);
+    fb_run(2000);                                       /* the PIANO ROLL */
+    qd_app_key(&A, QD_WHITE_KEY[2], 1, 100);
+    fb_run(600);                                        /* a step held */
+    qd_app_key(&A, QD_WHITE_KEY[2], 0, 0);
+    fb_run(600);
+    tap_button(QD_B_REC);
+    for (k = 0; k < 6; k++) {                           /* the keyboard played */
+        qd_app_key(&A, QD_WHITE_KEY[k], 1, 100);
+        fb_run(120);
+        qd_app_key(&A, QD_WHITE_KEY[k], 0, 0);
+        fb_run(80);
+    }
+    tap_button(QD_B_HOME);
+    for (k = 0; k < 5; k++) {                           /* SHIFT + B6: the TAP ape */
+        qd_app_button(&A, QD_B_FUNC, 1);
+        fb_run(20);
+        qd_app_key(&A, QD_BLACK_KEY[5], 1, 100);
+        fb_run(20);
+        qd_app_key(&A, QD_BLACK_KEY[5], 0, 0);
+        qd_app_button(&A, QD_B_FUNC, 0);
+        fb_run(460);
+    }
+    fb_run(2500);
+    for (k = QD_VIEW_METERS; k <= QD_VIEW_SCOPE; k++) {   /* the Geek Out pages */
+        qd_app_show(&A, QD_MODE_STEP, k);
+        fb_run(700);
+    }
+    CHECK(fb_frames > 300 && !fb_bad_frames, "P2.6f: the changed bands only, frame after frame (%d frames): the same "
+          "as every band drawn (%d frames differ, %d pixels, rows %d..%d, the first at %d ms)", fb_frames,
+          fb_bad_frames, fb_bad_px, fb_bad_y0, fb_bad_y1, fb_first_bad);
+}
+#endif
+
+/* P2.6g: the pipelined block (a block's effects and output while the next block's voices render): the same samples
+ * as qd_app_block_end's, one block later, over the demo playing with the metronome on and a tempo change */
+#define PIPE_N 6000
+static int16_t pipe_a[PIPE_N * 2 * QD_MIX_CTL], pipe_b[PIPE_N * 2 * QD_MIX_CTL];
+static void pipe_run(int pipelined)
+{
+    static qd_blk_t K[2];
+    int n, i;
+    fresh();
+    run(300, 0);
+    A.metro = 1, A.metro_lvl = 80;
+    qd_app_play(&A);
+    for (n = 0; n <= PIPE_N; n++) {
+        if (n % 3 == 0)
+            qd_app_tick(&A, ++now);
+        if (n == PIPE_N / 2)
+            qd_app_tempo(&A, 97);
+        if (!pipelined) {
+            qd_bus_t x, y;
+            if (n == PIPE_N)
+                break;
+            qd_app_block_begin(&A);
+            qd_app_block_voices(&A, A.pool.nvoice / 2, A.pool.nvoice, &y);
+            qd_app_block_voices(&A, 0, A.pool.nvoice / 2, &x);
+            qd_app_block_end(&A, &x, &y, pipe_a + n * 2 * QD_MIX_CTL);
+        } else {
+            qd_blk_t *k = &K[n & 1];
+            if (n < PIPE_N) {
+                qd_app_block_begin_k(&A, k);
+                qd_app_block_voices(&A, A.pool.nvoice / 2, A.pool.nvoice, &k->y);
+            }
+            if (n > 0)                                  /* (the last block's effects between this one's halves) */
+                qd_app_block_out(&A, &K[(n - 1) & 1], pipe_b + (n - 1) * 2 * QD_MIX_CTL);
+            if (n < PIPE_N) {
+                qd_app_block_voices(&A, 0, A.pool.nvoice / 2, &k->x);
+                qd_app_block_publish(&A, k);
+            }
+        }
+    }
+    (void)i;
+}
+static void t_pipe(void)
+{
+    int i, diff = 0, nz = 0;
+    pipe_run(0);
+    pipe_run(1);
+    for (i = 0; i < PIPE_N * 2 * QD_MIX_CTL; i++)
+        diff += pipe_a[i] != pipe_b[i], nz += pipe_a[i] != 0;
+    CHECK(!diff && nz > 1000, "P2.6g: pipelined, the effects of a block during the next one's voices: qd_app_block_end's "
+          "samples one block later (%d of %d differ)", diff, PIPE_N * 2 * QD_MIX_CTL);
+}
+
+/* P2.1b: shapes the strips' culling must leave exact (plutovg-rasterize.c cull_runs): a zigzag across every strip, a
+ * closed quad, a square wave whose long lines run straight on through a vertex, a dashed one, curves, a fill, all
+ * drawn whole and in the device's strips (the host: its surface can hold the whole screen) */
+#if QD_STRIP_H >= QD_H
+static void strip_shapes(void)
+{
+    static const float DASH[2] = {3.f, 2.f};
+    int i;
+    qd_path_begin();
+    qd_move_to(10, 5);
+    for (i = 1; i < 30; i++)
+        qd_line_to(10.f + (float)i * 7.f, (i % 2) ? 230.f : 5.f);
+    qd_path_stroke(0xFFFFFFu, 3.f);
+    qd_path_begin();
+    qd_move_to(20, 20), qd_line_to(200, 30), qd_line_to(210, 200), qd_line_to(30, 210), qd_path_close();
+    qd_path_stroke(0x80FF40u, 4.f);
+    qd_path_begin();
+    qd_move_to(52, 92);
+    for (i = 1; i < 60; i++)
+        qd_line_to(52.f + (float)i * 2.9333f, (i / 15) % 2 ? 46.f + (float)(i % 3) * 0.01f : 138.f);
+    qd_path_stroke(0x40C0FFu, 2.f);
+    qd_dash(DASH, 2);
+    qd_path_begin();
+    qd_move_to(5, 120);
+    for (i = 1; i < 12; i++)
+        qd_line_to(5.f + (float)i * 20.f, 120.f + ((i % 2) ? 100.f : -100.f));
+    qd_path_stroke(0xFF4080u, 1.5f);
+    qd_dash(0, 0);
+    qd_path_begin();
+    qd_move_to(30, 230), qd_cubic_to(80, -40, 160, 280, 220, 10);
+    qd_path_stroke(0xFFFF00u, 5.f);
+    qd_path_begin();
+    qd_move_to(100, 60), qd_cubic_to(200, 60, 200, 180, 100, 180), qd_cubic_to(0, 180, 0, 60, 100, 60);
+    qd_path_fill(0x2040A0u);
+}
+static void t_strip_shapes(void)
+{
+    static uint16_t whole[QD_W * QD_H], strips[QD_W * QD_H];
+    int y, i, n = 0;
+    qd_set_strip_rows(QD_H);
+    qd_begin_strip(0), strip_shapes(), qd_end_strip(whole);
+    qd_set_strip_rows(QD_STRIP_DEV);
+    for (y = 0; y < QD_H; y += QD_STRIP_DEV)
+        qd_begin_strip(y), strip_shapes(), qd_end_strip(strips);
+    qd_set_strip_rows(QD_STRIP_H);
+    for (i = 0; i < QD_W * QD_H; i++)
+        n += whole[i] != strips[i];
+    CHECK(!n, "P2.1b: strokes (a zigzag, a closed quad, long straight runs, dashes, curves) and a fill, whole and in "
+          "%d-row strips: the same (%d differ)", QD_STRIP_DEV, n);
+}
+#else
+static void t_strip_shapes(void) {}
+#endif
+
+static void t_play(void)
+{
+    qd_leds_t l;
+    uint32_t starts;
+    int green = 0, k;
+    fresh_keys();
+    CHECK(A.seq.cur == 0 && A.bpm == 124 && !A.seq.playing, "power-on: A01 (the intro) at 124 BPM, stopped");
+    tap_button(QD_B_PLAY);
+    starts = A.pool.starts;
+    for (k = 0; k < 1200; k++) {
+        run(1, 0);
+        qd_app_leds(&A, &l);
+        green += l.play_green != 0;
+    }
+    CHECK(A.seq.playing && A.playing && A.pool.starts >= starts + 6 && peak_l > 1000, "PLAY: A01 plays (%u starts)",
+          A.pool.starts - starts);
+    CHECK(green > 100 && green < 300, "PLAY's green LED on the beat (%d of 1200 ms)", green);
+    CHECK(app_beats() > 2.3 && app_beats() < 2.7, "the transport moved 2.5 beats in 1.2 s at 124 BPM (%f)", app_beats());
+    qd_app_key(&A, 9, 1, 100);                          /* a key held across the stop */
+    run(5, 0);
+    tap_button(QD_B_PLAY);
+    run(5, 0);
+    CHECK(!A.seq.playing && seq_voices() == 1 && sounding(A.sel, 62), "PLAY again: the sequence's notes released, the "
+          "key's held (%d held)", seq_voices());
+    qd_app_key(&A, 9, 0, 0);
+    printf("  play: A01 at power-on, PLAY plays and stops, the beat LED, a held key outlives the stop\n");
+}
+
+static void t_patterns(void)
+{
+    qd_leds_t l;
+    uint64_t h0, h1;
+    uint32_t t0;
+    fresh();
+    wake_up();
+    qd_seq_select(&A.seq, 1, 0);                        /* A02 (power-on is A01) */
+    tap_button(QD_B_PLAY);
+    run(500, 0);
+    qd_app_button(&A, QD_B_MIX, 1);
+    qd_app_key(&A, WK[0], 1, 100);                      /* A01 */
+    run(10, 0);
+    qd_app_leds(&A, &l);
+    CHECK(qd_seq_queued(&A.seq) == 0 && A.seq.cur == 1, "SEQ + white key 1: A01 queued, A02 plays on");
+    CHECK(l.key[WK[1]] == QD_LED_LIT && l.key[WK[2]] == QD_LED_DIM && l.key[WK[4]] == QD_LED_OFF,
+          "SEQ held: A02 lit, A03 dim (content), A05 off");
+    qd_app_key(&A, WK[0], 0, 0);
+    qd_app_button(&A, QD_B_MIX, 0);
+    h0 = frame_hash();
+    run(250, 0);
+    h1 = frame_hash();
+    CHECK(h0 != h1, "the screen's pattern blinks while one is queued");
+    t0 = now;                                           /* the change: 32 sixteenths at 124 BPM = 3871 ms from PLAY
+                                                         * (P1.3x: released at 20 ms: the transport starts at the next
+                                                         * block after the release) */
+    while (A.seq.cur == 1 && now < 10000)
+        run(1, 0);
+    CHECK(A.seq.cur == 0 && qd_seq_queued(&A.seq) < 0 && now >= 3926 && now <= 3941,
+          "A01 takes over at the end of A02's master length (at %u ms; PLAY released at 60, after the wake's 40)", now);
+    (void)t0;
+    qd_app_button(&A, QD_B_MIX, 1);                     /* P1.3c: the key held 400 ms: at the next 16th */
+    qd_app_key(&A, WK[2], 1, 100);
+    run(400, 0);
+    t0 = now;
+    while (A.seq.cur != 2 && now < t0 + 1000)
+        run(1, 0);
+    qd_app_key(&A, WK[2], 0, 0);
+    qd_app_button(&A, QD_B_MIX, 0);
+    CHECK(A.seq.cur == 2 && now - t0 <= 151, "SEQ + white key 3 held 400 ms: A03 within a 16th (%u ms)", now - t0);
+    run(200, 0);
+    CHECK(A.bpm == 124, "A03's tempo (%d)", A.bpm);
+    tap_button(QD_B_PLAY);
+    qd_app_button(&A, QD_B_MIX, 1);                 /* stopped: at once */
+    tap_key(WK[1]);
+    qd_app_button(&A, QD_B_MIX, 0);
+    CHECK(A.seq.cur == 1 && qd_seq_queued(&A.seq) < 0 && A.bpm == 124, "stopped: A02 at once, its tempo");
+    qd_app_button(&A, QD_B_FUNC, 1);                    /* (2026-10-25: FILL is SHIFT + FX held) */
+    qd_app_button(&A, QD_B_TRACKS, 1);
+    CHECK(A.seq.fill, "SHIFT + FX held: FILL");
+    qd_app_button(&A, QD_B_TRACKS, 0);
+    qd_app_button(&A, QD_B_FUNC, 0);
+    CHECK(!A.seq.fill, "FX released: no FILL");
+    printf("  patterns: queued to the end of the master length (the name blinks), FUNC: the next 16th, stopped: at "
+           "once; the LEDs\n");
+}
+
+/* clips (2026-11-17, EvilGenius for Move): each track its own pattern's part, launched and stopped on its own */
+static void t_clips(void)
+{
+#if QD_CLIPS
+    int64_t f0;
+    uint32_t t0;
+    int k;
+    fresh();
+    wake_up();
+    for (k = 0; k < 2; k++) {                           /* (patterns 7 and 8: a step on every 4th of tracks 1 and 2) */
+        qd_pattern_t *P = qd_proj_pat(&A.proj, 7 + k);
+        int t, st;
+        qd_pat_init(P);
+        for (t = 0; t < 2; t++)
+            for (st = 0; st < 16; st += 4)
+                qd_step_on(P, t, st);
+    }
+    qd_seq_select(&A.seq, 7, 0);
+    qd_seq_clips(&A.seq, 1);
+    qd_seq_launch(&A.seq, 1, 8, QD_LAUNCH_BAR);
+    CHECK(qd_seq_clip(&A.seq, 0) == 7 && qd_seq_clip(&A.seq, 1) == 8 && qd_seq_clip_on(&A.seq, 1),
+          "stopped: a launch takes at once");
+    tap_button(QD_B_PLAY);
+    run(1000, 0);
+    CHECK(A.seq.cur_t[0].pat == 7 && A.seq.cur_t[1].pat == 8 && A.seq.flash_tick[0] > 0 && A.seq.flash_tick[1] > 0,
+          "PLAY: each track its own clip, both heard");
+    qd_seq_stop_track(&A.seq, 0, QD_LAUNCH_NOW);
+    run(200, 0);
+    f0 = A.seq.flash_tick[0];
+    run(2000, 0);
+    CHECK(A.seq.flash_tick[0] == f0 && !qd_seq_clip_on(&A.seq, 0) && A.seq.flash_tick[1] > f0,
+          "a track stopped: silent, the other plays on");
+    qd_seq_launch(&A.seq, 0, 8, QD_LAUNCH_BAR);
+    CHECK(qd_seq_clip_queued(&A.seq, 0) == 8 && qd_seq_clip(&A.seq, 0) == 7, "launched: queued");
+    t0 = now;
+    while (qd_seq_clip(&A.seq, 0) != 8 && now < t0 + 3000)
+        run(1, 0);
+    CHECK(qd_seq_clip(&A.seq, 0) == 8 && A.seq.torigin[0] % (16 * QD_TPS) == 0 && qd_seq_clip_on(&A.seq, 0),
+          "it starts at the bar");
+    run(300, 0);
+    CHECK(A.seq.flash_tick[0] >= A.seq.torigin[0], "and is heard");
+    qd_seq_stop_track(&A.seq, 1, QD_LAUNCH_BAR);
+    CHECK(qd_seq_clip_queued(&A.seq, 1) == -2, "a stop queued");
+    tap_button(QD_B_PLAY);
+    run(10, 0);
+    CHECK(!A.seq.playing && !qd_seq_clip_on(&A.seq, 1) && qd_seq_clip_on(&A.seq, 0), "transport stopped: the queued "
+          "stop taken");
+    qd_seq_select_at(&A.seq, 7, QD_LAUNCH_BAR);
+    CHECK(qd_seq_clip(&A.seq, 0) == 7 && qd_seq_clip(&A.seq, 1) == 7 && qd_seq_clip_on(&A.seq, 1) && A.seq.cur == 7,
+          "a scene: every track's part of it");
+    qd_seq_clips(&A.seq, 0);
+    printf("  clips: each track its own clip, launched at the bar, stopped (silent), a scene\n");
+#endif
+}
+
+/* P1.4b: the tracks screen of clocks is retired; FX tapped: the effects (FX lit), again their next page; ENV: the mix
+ * (ENV lit; its meters move while playing), again the sends; SEL tapped: the track settings (SEL lit); SEL held + W1:
+ * track 1 muted, it plays nothing; FX held + W4: track 4 */
+static void t_tracks(void)
+{
+    qd_leds_t l;
+    int k, n1 = 0;
+    fresh();
+    wake_up();
+    tap_button(QD_B_TRACKS);
+    qd_app_leds(&A, &l);
+    CHECK(A.ui.mode == QD_MODE_STEP && A.ui.latch == QD_LATCH_FX && qd_view_screen(&A) == QD_SCR_FX &&
+              l.button[QD_B_TRACKS] == QD_LED_LIT && A.ui.fx_page == 0,
+          "FX tapped: the effects, the OVERVIEW (FX lit)");
+    tap_button(QD_B_TRACKS);
+    CHECK(A.ui.fx_page == 1, "FX again: the next page (DELAY)");
+    tap_button(QD_B_PAGE);
+    qd_app_leds(&A, &l);
+    CHECK(A.ui.latch == QD_LATCH_MIX && qd_view_screen(&A) == QD_SCR_MIX && l.button[QD_B_PAGE] == QD_LED_LIT &&
+              !A.ui.mix_page, "ENV: the mix (ENV lit)");
+    tap_button(QD_B_PLAY);
+    run(300, 0);
+    {
+        uint64_t h0 = frame_hash();
+        run(100, 0);
+        CHECK(h0 != frame_hash(), "playing: the mix's meters move");
+    }
+    tap_button(QD_B_PAGE);
+    CHECK(A.ui.mix_page == 1 && qd_view_screen(&A) == QD_SCR_MIX, "ENV again: the sends");
+    {                                                   /* 2026-11-14 (owner): PRESETS the track, ALGORITHM the step */
+        const int s0 = A.sel;
+        const uint8_t m0 = A.seq.mute;
+        qd_app_knob(&A, QD_K_PRESETS, 1);
+        run(10, 0);
+        CHECK(A.sel == s0 + 1 && A.seq.mute == m0 && A.ui.latch == QD_LATCH_MIX,
+              "the mix, PRESETS right: the next track (%d -> %d), no mute, the mix still open", s0, A.sel);
+        qd_app_knob(&A, QD_K_ALGO, 1);
+        run(10, 0);
+        CHECK(A.ui.slatch && A.ui.nheld == 1 && A.ui.held[0] == A.ui.page[A.sel] * QD_PAGE &&
+                  A.ui.latch == QD_LATCH_MIX, "the mix, ALGORITHM right: the page's first step chosen (%d held, %d)",
+              A.ui.nheld, A.ui.held[0]);
+        qd_app_knob(&A, QD_K_ALGO, -1);
+        run(10, 0);
+        CHECK(!A.ui.nheld && A.sel == s0 + 1, "the mix, ALGORITHM fully left: LIVE, no step (%d held)", A.ui.nheld);
+        qd_app_knob(&A, QD_K_PRESETS, -1);
+        run(10, 0);
+        CHECK(A.sel == s0, "the mix, PRESETS left: the track back (%d)", A.sel);
+    }
+    A.seq.mute |= 1u;                                   /* track 1 muted (2026-11-11: SEL's map retired; the mix's
+                                                         * hold does it, tested in test_ctl) */
+    run(10, 0);
+    CHECK((A.seq.mute & 1u) && A.ui.latch == QD_LATCH_MIX, "track 1 muted, the mix still open");
+    run(1000, 0);
+    for (k = 0; k < A.pool.nvoice; k++)
+        n1 += A.pool.v[k].track == 0 && qd_pool_sounding(&A.pool, k) && A.pool.v[k].q.gate;
+    CHECK(n1 == 0, "the muted track plays nothing (%d held)", n1);
+    qd_app_button(&A, QD_B_FUNC, 1);                    /* (2026-11-10: SHIFT + SEL; SEL tapped is OVERVIEW) */
+    tap_button(QD_B_PATTERN);
+    qd_app_button(&A, QD_B_FUNC, 0);
+    run(10, 0);
+    qd_app_leds(&A, &l);
+    CHECK(A.ui.latch == QD_LATCH_TRK && qd_view_screen(&A) == QD_SCR_MENU && l.button[QD_B_PATTERN] == QD_LED_LIT,
+          "SHIFT + SEL: the track settings (SEL lit)");
+    tap_button(QD_B_HOME);
+    CHECK(!A.ui.latch && A.ui.mode == QD_MODE_STEP, "HOME: back to the step view");
+    qd_app_button(&A, QD_B_TRACKS, 1);
+    tap_key(WK[3]);
+    qd_app_button(&A, QD_B_TRACKS, 0);
+    run(10, 0);
+    CHECK(A.sel == 3 && !A.ui.latch, "FX held + white key 4: track 4, no page opened");
+    tap_button(QD_B_PLAY);
+    printf("  P1.4b: FX the effects, ENV the mix / sends, SEL the track settings; SEL + W mutes; FX + W selects\n");
+}
+
+static void t_along(void)
+{
+    int k, peak_with = 0;
+    fresh();
+    wake_up();
+    tap_button(QD_B_REC);
+    tap_button(QD_B_PLAY);
+    run(300, 0);
+    qd_app_key(&A, 14, 1, 110);                         /* G4 on track 1 while A02 plays */
+    for (k = 0; k < 200; k++) {
+        run(1, 0);
+        peak_with |= sounding(0, 67 - 0);
+    }
+    CHECK(peak_with, "KEYS while playing: the key plays the selected track along");
+    qd_app_key(&A, 14, 0, 0);
+    printf("  along: in KEYS mode with the transport playing, the keys play along\n");
+}
+
+static void t_clock(void)
+{
+    int k;
+    fresh();
+    run(990, 0);                                        /* (P1.3i: a clock follows its START at once, as a DAW's does;
+                                                         * a START left alone for 0.5 s is given up) */
+    qd_app_midi(&A, 0xFA, 0, 0);                        /* START */
+    for (k = 0; k < 24 * 12; k++) {                     /* 12 beats at 140 BPM: a pulse every 17.857 ms */
+        const uint32_t at = 1000u + (uint32_t)(k * 60000.0 / 140.0 / 24.0 + 0.5);
+        if (now < at)
+            run(at - now, 0);
+        qd_app_midi(&A, 0xF8, 0, 0);
+    }
+    run(5, 0);
+    CHECK(A.seq.playing && A.seq.ext && A.playing && A.bpm == 140, "MIDI START + clock at 140: playing at %d BPM",
+          A.bpm);
+    CHECK(app_beats() > 11.5 && app_beats() < 12.5, "the transport followed: %.2f beats after 12 of the clock", app_beats());
+    qd_app_midi(&A, 0xFC, 0, 0);                        /* STOP */
+    run(5, 0);
+    CHECK(!A.seq.playing && !A.playing && seq_voices() == 0, "MIDI STOP: stopped, released");
+    printf("  clock: MIDI START and 24 PPQN at 140 BPM drive the transport; STOP stops\n");
+}
+
+/* EvilGenius: the title's pixels: the band EVIL sits in (y 122 .. 150, under the jar: the brain is light red too)
+ * drawn in its light red (near it: the 8-bit frame's palette may round it) */
+static int word_px(void)
+{
+    static uint16_t lcd[QD_W * QD_H];
+    int x, y, n = 0;
+    qd_app_frame(&A, lcd);
+    for (y = 122; y < 150; y++)
+        for (x = 0; x < QD_W; x++) {
+            const unsigned px = (unsigned)(lcd[y * QD_W + x] >> 8 | (lcd[y * QD_W + x] & 0xffu) << 8);
+            const int r = (int)((px >> 11) & 31u) * 255 / 31, g = (int)((px >> 5) & 63u) * 255 / 63,
+                      bl = (int)(px & 31u) * 255 / 31;
+            n += abs(r - 0xc4) + abs(g - 0x6c) + abs(bl - 0x71) < 48;
+        }
+    return n;
+}
+
+/* P1.3k..P1.3p: FIZZ's idle screen (the logo: champagne bubbles in the app's colours, the word from particles): it
+ * moves with the clock, the same clock draws the same frame, it loops seamlessly, the word is solid only at its hold
+ * (particles while it gathers and dissolves), and a running transport (a DAW's MIDI clock, the screen staying idle)
+ * adds the beats' surge */
+static void t_fizz(void)
+{
+    static const struct {
+        float t;
+        int solid, parts;
+    } WP[] = {{2.0f, 0, 0}, {4.3f, 0, 1}, {6.5f, 1, 0}, {8.5f, 1, 0}, {9.4f, 0, 1}, {10.8f, 0, 0}};
+    uint64_t a1, a2, b1, s1, p1;
+    int k, ok = 1, n_gather, n_hold, n_fizz;
+    fresh();
+    run(2000, 0);
+    a1 = frame_hash();
+    run(100u > 1000u / QD_IDLE_FPS ? 100u : 1000u / QD_IDLE_FPS + 10u, 0);   /* (P2.6i: a step of its pace on) */
+    b1 = frame_hash();
+    fresh();
+    run(2000, 0);
+    a2 = frame_hash();
+    CHECK(A.ui.mode == QD_MODE_IDLE && a1 == a2 && a1 != b1, "the idle screen: the same at the same time after "
+          "power-on, moving a step of its pace later");
+    fresh();                                            /* P1.3o: seamless, 11 s a loop */
+    run(1500, 0);
+    a1 = frame_hash();
+    run(11000, 0);
+    a2 = frame_hash();
+    CHECK(A.ui.mode == QD_MODE_IDLE && a1 == a2, "the idle screen loops seamlessly: 1.5 s and 12.5 s the same");
+    for (k = 0; k < (int)(sizeof WP / sizeof WP[0]); k++) {   /* P1.3p: the word's phases */
+        float so, pa;
+        ui_idle_word(WP[k].t, &so, &pa);
+        ok &= (so >= 0.999f) == WP[k].solid && (so <= 0.001f) == !WP[k].solid && (pa > 0.f) == WP[k].parts;
+        ui_idle_word(WP[k].t + 11.f, &so, &pa);
+        ok &= (so >= 0.999f) == WP[k].solid && (pa > 0.f) == WP[k].parts;
+    }
+    CHECK(ok, "the word: nothing at 2 s, particles only gathering (4.3 s) and dissolving (9.4 s), solid only at its "
+          "hold (6.5, 8.5 s), none by 10.8 s; every loop");
+    fresh();
+    run(4300, 0);
+    n_gather = word_px();
+    run(2200, 0);
+    n_hold = word_px();
+    run(2900, 0);
+    n_fizz = word_px();
+    CHECK(n_hold >= 40 && n_gather < n_hold && n_fizz < n_hold, "on the screen: the title whole at the hold (%d px of "
+          "EVIL's light red), only part of it while its letters drop in (%d) and fall away (%d)", n_hold, n_gather,
+          n_fizz);
+    fresh();
+    run(3000, 0);
+    s1 = frame_hash();                                  /* stopped at 3 s */
+    fresh();
+    run(990, 0);
+    qd_app_midi(&A, 0xFA, 0, 0);                        /* START, then a clock at 120 BPM from 1 s */
+    for (k = 0; k < 96; k++) {
+        const uint32_t at = 1000u + (uint32_t)(k * 60000.0 / 120.0 / 24.0 + 0.5);
+        if (now < at)
+            run(at - now, 0);
+        qd_app_midi(&A, 0xF8, 0, 0);
+    }
+    if (now < 3000)
+        run(3000 - now, 0);
+    p1 = frame_hash();
+    CHECK(A.ui.mode == QD_MODE_IDLE && A.playing && p1 != s1, "playing (MIDI clock, still idle): the beats' surge "
+          "changes the screen");
+    qd_app_midi(&A, 0xFC, 0, 0);
+    printf("  fizz: the logo screen: deterministic, moving, seamless, the word solid only at its hold (%d px), surging "
+           "with a running transport\n", n_hold);
+}
+
+static uint64_t session_seq(void)
+{
+    int k;
+    fresh();
+    wake_up();
+    tap_button(QD_B_PLAY);
+    run(700, 0);
+    qd_app_button(&A, QD_B_MIX, 1);
+    tap_key(WK[2]);
+    qd_app_button(&A, QD_B_MIX, 0);
+    tap_button(QD_B_REC);
+    qd_app_key(&A, 9, 1, 100);
+    run(4500, 0);
+    qd_app_key(&A, 9, 0, 0);
+    tap_button(QD_B_PLAY);
+    qd_app_midi(&A, 0xFA, 0, 0);
+    for (k = 0; k < 48; k++) {
+        qd_app_midi(&A, 0xF8, 0, 0);
+        run(21, 0);
+    }
+    qd_app_midi(&A, 0xFC, 0, 0);
+    run(1500, 0);
+    return hash;
+}
+
+static uint64_t session(void)
+{
+    fresh();
+    qd_app_key(&A, 9, 1, 100);
+    run(300, 0);
+    qd_app_knob(&A, QD_K_PRESETS, -3);
+    qd_app_midi(&A, 0x91, 40, 100);
+    qd_app_midi(&A, 0x95, 64, 80);
+    run(700, 0);
+    qd_app_key(&A, 9, 0, 0);
+    qd_app_midi(&A, 0x81, 40, 0);
+    run(2000, 0);
+    return hash;
+}
+
+/* ---------------------------------------------------------------- P2.6: the block in three --- */
+/* qd_app_block_begin / _voices / _end: three apps on one script (the demo playing, chords on two tracks over it, a
+ * pattern change, the transport stopped and started): one through qd_app_audio, one with the halves B then A, one A
+ * then B: every sample the same. And qd_app_block_voices writes nothing but its voices' own slots (the pool's, the
+ * mix's): the whole app compared byte for byte around each call, and what the voices share outside it (the song
+ * stub, the comb lines' holders) */
+static qd_app_t S1, SNAP;
+static uint32_t split_bad, split_calls;
+static int split_ok_byte(size_t off, int v0, int v1)
+{
+    const size_t pv = offsetof(qd_app_t, pool) + offsetof(qd_pool_t, v), mx = offsetof(qd_app_t, mix);
+    int i;
+    for (i = v0; i < v1; i++) {
+        const size_t a0 = pv + (size_t)i * sizeof(qd_pool_voice_t);
+        if (off >= a0 && off < a0 + sizeof(qd_pool_voice_t))
+            return 1;
+        if (off >= mx + offsetof(qd_mix_t, sg) + (size_t)i * sizeof S1.mix.sg[0] &&
+            off < mx + offsetof(qd_mix_t, sg) + (size_t)(i + 1) * sizeof S1.mix.sg[0])
+            return 1;
+        if (off >= mx + offsetof(qd_mix_t, serial) + (size_t)i * sizeof S1.mix.serial[0] &&
+            off < mx + offsetof(qd_mix_t, serial) + (size_t)(i + 1) * sizeof S1.mix.serial[0])
+            return 1;
+        if (off >= mx + offsetof(qd_mix_t, dist) + (size_t)i * sizeof S1.mix.dist[0] &&
+            off < mx + offsetof(qd_mix_t, dist) + (size_t)(i + 1) * sizeof S1.mix.dist[0])
+            return 1;
+    }
+    return 0;
+}
+static void split_voices(qd_app_t *a, int v0, int v1, qd_bus_t *bus, int guard)
+{
+    uint32_t sig = 0;
+    if (guard) {
+        memcpy(&SNAP, a, sizeof SNAP);
+        sig = qd_quad_shared_sig();
+    }
+    qd_app_block_voices(a, v0, v1, bus);
+    if (guard) {
+        const uint8_t *x = (const uint8_t *)(const void *)&SNAP, *y = (const uint8_t *)(const void *)a;
+        size_t k;
+        for (k = 0; k < sizeof SNAP; k++)
+            if (x[k] != y[k] && !split_ok_byte(k, v0, v1)) {
+                if (!split_bad)
+                    printf("  (qd_app_block_voices %d..%d wrote the app's byte %lu)\n", v0, v1, (unsigned long)k);
+                split_bad++;
+            }
+        if (sig != qd_quad_shared_sig()) {
+            if (!split_bad)
+                printf("  (qd_app_block_voices %d..%d wrote what the voices share)\n", v0, v1);
+            split_bad++;
+        }
+        split_calls++;
+    }
+}
+static void split_block(qd_app_t *a, int b_first, int16_t *out)
+{
+    qd_bus_t A, B;
+    const int mid = a->pool.nvoice / 2;
+    qd_app_block_begin(a);
+    if (b_first) {
+        split_voices(a, mid, a->pool.nvoice, &B, 1);
+        split_voices(a, 0, mid, &A, 1);
+    } else {
+        split_voices(a, 0, mid, &A, 0);
+        split_voices(a, mid, a->pool.nvoice, &B, 0);
+    }
+    qd_app_block_end(a, &A, &B, out);
+}
+/* one run of the script on S1 (the effects are the process's: the runs one after another, each from qd_app_init):
+ * mode 0 qd_app_audio, 1 the halves B then A (guarded), 2 A then B; a hash of each block's samples into hs */
+static uint32_t split_run(int mode, uint64_t *hs, uint32_t max, uint32_t *maxv, uint32_t *halfb)
+{
+    static const uint8_t CH[2][5] = {{48, 52, 55, 59, 62}, {60, 64, 67, 0, 0}};
+    qd_app_t *a = &S1;
+    int16_t o[2 * QD_MIX_CTL];
+    uint32_t ms, done = 0, blocks = 0;
+    int j, t;
+    qd_app_init(a);
+    qd_app_tick(a, 0);
+    qd_seq_select(&a->seq, 3, 0);                       /* A04, the drop: every track (power-on is A01, the intro) */
+    qd_app_play(a);
+    for (ms = 1; ms <= 9000u; ms++) {
+        if (ms % 3000u == 300u || ms % 3000u == 1700u)  /* chords on tracks 1 and 4, struck and released */
+            for (j = 0; j < 5; j++)
+                for (t = 0; t < 2; t++) {
+                    if (!CH[t][j])
+                        continue;
+                    if (ms % 3000u == 300u)
+                        qd_player_key_on(&a->player, t * 3, CH[t][j], 100 - 10 * t);
+                    else
+                        qd_player_key_off(&a->player, t * 3, CH[t][j]);
+                }
+        if (ms == 4000u)
+            qd_seq_select(&a->seq, 0, 1);               /* A01 at the next 16th */
+        if (ms == 7000u)
+            qd_app_stop(a);
+        if (ms == 7600u)
+            qd_app_play(a);
+        qd_app_tick(a, ms);
+        while (done + QD_MIX_CTL <= (uint64_t)ms * QD_FS / 1000u && blocks < max) {
+            uint64_t h = 14695981039346656037ull;
+            if (mode == 0)
+                qd_app_audio(a, o, QD_MIX_CTL);
+            else
+                split_block(a, mode == 1, o);
+            for (j = 0; j < 2 * QD_MIX_CTL; j++)
+                h = (h ^ (uint16_t)o[j]) * 1099511628211ull;
+            hs[blocks++] = h;
+            done += QD_MIX_CTL;
+            if (maxv && (uint32_t)qd_pool_in_use(&a->pool) > *maxv)
+                *maxv = (uint32_t)qd_pool_in_use(&a->pool);
+            for (j = a->pool.nvoice / 2; halfb && j < a->pool.nvoice; j++)
+                *halfb += qd_pool_used(&a->pool, j);
+        }
+    }
+    return blocks;
+}
+static void t_split(void)
+{
+    static uint64_t h0[13000], h1[13000], h2[13000];
+    uint32_t n0, n1, n2, k, differ = 0, maxv = 0, halfb = 0;
+    split_bad = split_calls = 0;
+    n0 = split_run(0, h0, 13000, &maxv, &halfb);
+    n1 = split_run(1, h1, 13000, 0, 0);
+    n2 = split_run(2, h2, 13000, 0, 0);
+    for (k = 0; k < n0 && k < n1 && k < n2; k++)
+        differ += h0[k] != h1[k] || h0[k] != h2[k];
+    CHECK(!differ && n0 == n1 && n0 == n2 && n0 > 10000u, "P2.6: the block in three: %u blocks, the halves B then A "
+          "and A then B the same samples as qd_app_audio (%u differ)", n0, differ);
+    CHECK(!split_bad && split_calls > 20000u, "P2.6: qd_app_block_voices writes nothing but its voices' own slots (%u "
+          "calls, %u bytes elsewhere)", split_calls, split_bad);
+    CHECK(maxv >= 8u && halfb > 0u, "P2.6: voices in both halves (at most %u at once)", maxv);
+    printf("  split: %u blocks the same three ways, %u guarded voice calls clean, up to %u voices\n", n0,
+           split_calls, maxv);
+}
+
+/* P2.6: the demos at the unit's voices (8 on one core, 16 with two): the steals and the notes dropped */
+static void t_busy(void)
+{
+    int k;
+    uint32_t own, cross, drops, maxv = 0;
+    fresh();
+    wake_up();
+    tap_button(QD_B_PLAY);
+    for (k = 0; k < 3; k++) {
+        qd_seq_select(&A.seq, k, 0);
+        run(20000, 0);
+        if ((uint32_t)qd_pool_in_use(&A.pool) > maxv)
+            maxv = (uint32_t)qd_pool_in_use(&A.pool);
+    }
+    tap_button(QD_B_PLAY);
+    own = A.pool.steals_own, cross = A.pool.steals_cross, drops = A.pool.drops;
+    CHECK(A.pool.nvoice >= 16 ? drops == 0 : drops * 100u <= A.pool.starts, "the demos at %d voices: %u notes dropped "
+          "(at 8: only where more notes start in one block than there are voices; under 1 %%)", A.pool.nvoice, drops);
+    printf("  busy: A01..A03 20 s each at %d voices: %u steals within a track, %u across, %u dropped, %u notes\n",
+           A.pool.nvoice, own, cross, drops, A.pool.starts);
+}
+
+/* P2.6: ONE INSTANT A FRAME (the device's strips, the fast drawing: the frame recorded once, every strip from it). A
+ * frame drawn while, between its strips, the clock runs on (9 ms a strip) and PLAY is pressed: the same pixels as that
+ * frame drawn with nothing in between (the same session again). And the strips' hashes: a strip the mask says is
+ * unchanged draws the last frame's very pixels */
+static uint16_t LA[QD_W * QD_H], LB[QD_W * QD_H], LP[QD_W * QD_H];
+static int inj_on, inj_k;
+static void cap(void *ctx, int y0, int rows, const uint16_t *px)
+{
+    uint16_t *to = (uint16_t *)ctx;
+    int k;
+    memcpy(to + (size_t)y0 * QD_W, px, (size_t)rows * QD_W * sizeof *px);
+    if (!inj_on)
+        return;
+    for (k = 0; k < 9; k++)                             /* (the platform between two strips: the clock, a press) */
+        qd_app_tick(&A, ++now);
+    if (inj_k++ == 1) {
+        qd_app_button(&A, QD_B_PLAY, 1);
+        qd_app_tick(&A, ++now);
+        qd_app_button(&A, QD_B_PLAY, 0);
+    }
+}
+static void t_instant(void)
+{
+    uint32_t nr0, nr1, nl, mb, m, f, unchanged = 0, bad = 0, drawn = 0;
+    int k;
+    if (QD_STRIP_H >= QD_H) {
+        printf("  one instant a frame: (the host draws the whole screen at once)\n");
+        return;
+    }
+    fresh();
+    run(2500, 0);
+    qd_dl_stats(&nr0, &nl, &mb);
+    inj_on = 1, inj_k = 0;
+    qd_app_frame_strips(&A, 0, cap, LA);                /* the clock and PLAY between its strips */
+    inj_on = 0;
+    qd_dl_stats(&nr1, &nl, &mb);
+    if (nr1 == nr0) {
+        printf("  one instant a frame: (this drawing draws its strips live: plutovg)\n");
+        return;
+    }
+    qd_app_frame_strips(&A, 0, cap, LP);                /* (the next frame: the press and the 45 ms shown) */
+    fresh();
+    run(2500, 0);
+    qd_app_frame_strips(&A, 0, cap, LB);                /* the same instant, nothing in between */
+    CHECK(!memcmp(LA, LB, sizeof LA) && memcmp(LP, LB, sizeof LP),
+          "P2.6: a frame drawn while the clock ran 45 ms and PLAY was pressed between its strips: the latched instant's "
+          "pixels (%s), the next frame the new ones (%s)", memcmp(LA, LB, sizeof LA) ? "differ" : "the same",
+          memcmp(LP, LB, sizeof LP) ? "moved" : "not moved");
+    fresh();                                            /* the strips' hashes: the step view playing */
+    qd_app_show(&A, QD_MODE_STEP, QD_VIEW_EDIT);
+    qd_app_play(&A);
+    run(500, 0);
+    for (f = 0; f < 150u; f++) {
+        run(33, 0);
+        qd_app_frame_strips_changed(&A, &m);
+        qd_app_frame_strips(&A, 0, cap, LB);
+        for (k = 0; f && k < QD_H / QD_STRIP_H; k++) {
+            if ((m >> k) & 1u) {
+                drawn++;
+                continue;
+            }
+            unchanged++;
+            bad += memcmp(LB + (size_t)k * QD_STRIP_H * QD_W, LP + (size_t)k * QD_STRIP_H * QD_W,
+                          (size_t)QD_STRIP_H * QD_W * sizeof LB[0]) != 0;
+        }
+        memcpy(LP, LB, sizeof LP);
+    }
+    CHECK(!bad && unchanged > 0, "P2.6: the strips' hashes: %u strips said unchanged, %u of them not the last frame's "
+          "pixels (%u changed)", unchanged, bad, drawn);
+    qd_dl_stats(&nr1, &nl, &mb);
+    printf("  one instant a frame: strips drawn from one instant whatever comes between them; the step view playing: "
+           "%u of %u strips unchanged (the largest list %u B)\n", unchanged, unchanged + drawn, mb);
+}
+
+int main(void)
+{
+    uint64_t h1, h2;
+    if (!qd_init()) {
+        printf("test_app: qd_init failed\n");
+        return 1;
+    }
+    qd_text_stats_reset();                              /* P1.3v: the clarity guard (checked at the end) */
+    t_keys();
+    t_say();
+    t_vox_filter();
+    t_rooms();
+    t_room_locks();
+    t_presets();
+    t_screens();
+    t_midi();
+    t_mfx();
+    t_mix();
+    t_mult_order();
+    t_limiter();
+    t_panic();
+    h1 = session();
+    h2 = session();
+    CHECK(h1 == h2, "two runs of one session differ");
+    printf("  determinism: one session twice, the same samples (%016llx)\n", (unsigned long long)h1);
+    t_strips();
+    t_pipe();
+#ifdef QD_GFX_FB
+    t_fb_steps();
+    t_fb_bands();
+#endif
+    t_strip_shapes();
+    t_play();
+    t_patterns();
+    t_clips();
+    t_tracks();
+    t_along();
+    t_clock();
+    t_fizz();
+    t_split();
+    t_busy();
+    t_instant();
+    h1 = session_seq();
+    h2 = session_seq();
+    CHECK(h1 == h2, "two runs of the sequencer's session differ");
+    printf("  determinism: the sequencer's session twice, the same samples (%016llx)\n", (unsigned long long)h1);
+    {
+        const char *small = "";
+        const float mn = qd_text_stats_min(&small);
+        CHECK(mn >= 11.f, "no text under 11 px in the frames drawn (the smallest: %.1f px, \"%s\")", (double)mn, small);
+    }
+    qd_shutdown();
+    printf("test_app: %d checks, %d failed\n", checks, fails);
+    return fails ? 1 : 0;
+}

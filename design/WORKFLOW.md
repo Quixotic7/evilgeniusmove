@@ -349,7 +349,7 @@ CLIPS · MIDI FX · FX · MIX (the four mode buttons' pages) · SCENES · ARRANG
 - It is the machine every page belt runs into.
 - It is the FX > SENDS page, as on the FM-1.
 
-## What the core needs (`../evilgenius/core`)
+## What the core needs (`core/`, this repository's copy)
 
 Today's limits:
 
@@ -412,7 +412,7 @@ compiles.
 **Stage 2, 8 tracks and 16 pages, in the core and the Move layer.** Checked in the simulator with `tests/eight.txt`
 (and the four older scripts, which pass at the new sizes). The Move build compiles.
 
-- **The core (the evilgenius repository, uncommitted):** `QD_TRACKS` and `QD_NSTEP` are build settings with the FM-1's
+- **The core (then in the evilgenius repository; now `core/` here):** `QD_TRACKS` and `QD_NSTEP` are build settings with the FM-1's
   values as defaults; the Move sets 8 and 256.
   - The loop mask is `qd_pmask_t`: 8 bits at 8 pages, 16 bits at 16.
   - The FM-1's screens and black keys use `QD_NPAGE_UI`, at most 8.
@@ -473,12 +473,18 @@ compiles.
   tapped alone (duplicate), New Clip and Double Loop on Shift + steps 14 / 15, undo for clip copy and cut, and saving
   which clip each track plays (a project opens with every track on its current pattern).
 
-**Not built yet** (each needs the core, which is shared with the FM-1 firmware):
+**Not built yet:**
 
 1. **PERFORM:** throws, beat repeat, filter sweeps, tape.
 2. **Mod mapping:** a modulation matrix for ENV and LFO.
 3. **SCENES and ARRANGE.**
 4. **The page belt on the wheel**, the sound-lock keys, the Trig page on pad 1.
+
+**17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
+evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this repository.
+The FM-1's repository is back on its `main`, untouched. The FM-1 guards above (`QD_CLIPS`, `QD_NPAGE_UI`, the 6-track
+defaults) are still in the code; they are harmless here and can go. `make core-test` runs the core's `test_app` at the
+Move's sizes (110 checks).
 
 ## Open questions for the user
 

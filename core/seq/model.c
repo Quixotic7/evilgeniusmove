@@ -1,0 +1,167 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+ * distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+/* The model (model.h): the default tracks. */
+#include <string.h>
+
+#include "model.h"
+
+/* the default kit: a usable band, one factory sound a track (SID TONE's 16, quad_voice.h's numbering), the voice
+ * limits of the brief (drums 4, the bass mono, the rest 6) */
+static const struct {
+    const char *name;
+    uint8_t preset, limit, kind;        /* (P1.6d: the kind, sounds.h QD_PK_*) */
+} QD_TRACK_DEF[QD_NTRACK] = {
+    {"DRUMS", 8, 4, 5},                 /* (EvilGenius, SID TONE's presets) ZAP: short (the kit's drums are its steps'
+                                         * sound locks) */
+    {"BASS", 2, 1, 0},                  /* PWM BASS, mono */
+    {"KEYS", 6, 6, 1},                  /* P+S ORGAN */
+    {"LEAD", 1, 6, 4},                  /* SAW LEAD */
+    {"PLUCK", 4, 6, 2},                 /* RING BELL */
+    {"PAD", 5, 6, 3},                   /* RESO PAD */
+#if QD_NTRACK > 6                       /* (a build of eight tracks: EvilGenius for Move) */
+    {"CHOIR", 10, 6, 3},                /* CHIP CHOIR */
+    {"FX", 12, 6, 6},                   /* WIND */
+#endif
+};
+typedef char qd_track_def_ok[sizeof QD_TRACK_DEF / sizeof QD_TRACK_DEF[0] == QD_NTRACK && QD_NTRACK <= 8 ? 1 : -1];
+
+const char *qd_track_kind_name(int kind)
+{
+    static const char *const N[7] = {"BASS", "KEYS", "PLUCK", "PAD", "LEAD", "DRUMS", "FX"};   /* (sounds.h's) */
+    return kind >= 0 && kind < 7 ? N[kind] : "";
+}
+
+void qd_track_name_default(qd_track_t *t, int i)
+{
+    i = i < 0 ? 0 : i >= QD_NTRACK ? QD_NTRACK - 1 : i;
+    memset(t->name, 0, sizeof t->name);
+    strncpy(t->name, QD_TRACK_DEF[i].name, QD_TRACK_NAME - 1);
+    t->kind = QD_TRACK_DEF[i].kind;
+    t->named = 0;
+}
+
+void qd_track_set_kind(qd_track_t *t, int kind)
+{
+    if (kind < 0 || kind >= 7)
+        return;
+    t->kind = (uint8_t)kind;
+    if (!t->named) {
+        memset(t->name, 0, sizeof t->name);
+        strncpy(t->name, qd_track_kind_name(kind), QD_TRACK_NAME - 1);
+    }
+}
+
+void qd_track_set_name(qd_track_t *t, const char *name)
+{
+    if (!name || !name[0])
+        return;
+    memset(t->name, 0, sizeof t->name);
+    strncpy(t->name, name, QD_TRACK_NAME - 1);
+    t->named = strcmp(t->name, qd_track_kind_name(t->kind)) != 0;
+}
+
+void qd_track_load_preset(qd_track_t *t, int k)
+{
+    k = k < 0 ? 0 : k >= QD_QUAD_NPRESET ? QD_QUAD_NPRESET - 1 : k;
+    qd_quad_preset_patch(k, t->patch);
+    t->sound = 0;
+    t->preset = (uint16_t)QD_QUAD_PRESET_ID(k);
+    t->edited = 0;
+    memset(t->sound_name, 0, sizeof t->sound_name);
+    strncpy(t->sound_name, qd_quad_preset_name(k), sizeof t->sound_name - 1);
+}
+
+void qd_track_load_sound(qd_track_t *t, int k, const char *name, const int16_t *patch)
+{
+    memcpy(t->patch, patch, sizeof t->patch);
+    t->sound = (uint8_t)k;
+    t->edited = 0;
+    memset(t->sound_name, 0, sizeof t->sound_name);
+    strncpy(t->sound_name, name ? name : "", sizeof t->sound_name - 1);
+}
+
+const char *qd_track_sound_name(const qd_track_t *t) { return t->sound_name; }
+
+const char *qd_track_sound_label(const qd_track_t *t)
+{
+    static char b[QD_SOUND_NAME + 3];
+    size_t n = strlen(t->sound_name);
+    memcpy(b, t->sound_name, n);
+    if (t->edited)
+        b[n++] = ' ', b[n++] = '*';
+    b[n] = 0;
+    return b;
+}
+
+void qd_tsound_default(int t, qd_tsound_t *s)
+{
+    const int k = QD_TRACK_DEF[t < 0 ? 0 : t >= QD_NTRACK ? QD_NTRACK - 1 : t].preset;
+    memset(s, 0, sizeof *s);
+    qd_quad_preset_patch(k, s->patch);
+    s->preset = (uint16_t)QD_QUAD_PRESET_ID(k);
+    strncpy(s->name, qd_quad_preset_name(k), sizeof s->name - 1);
+}
+
+void qd_track_to_tsound(const qd_track_t *t, qd_tsound_t *s)
+{
+    memset(s, 0, sizeof *s);
+    memcpy(s->patch, t->patch, sizeof s->patch);
+    s->sound = t->sound;
+    s->edited = t->edited;
+    memcpy(s->name, t->sound_name, sizeof s->name);
+    s->preset = t->preset;
+}
+
+void qd_track_from_tsound(qd_track_t *t, const qd_tsound_t *s)
+{
+    memcpy(t->patch, s->patch, sizeof t->patch);
+    t->sound = s->sound;
+    t->edited = s->edited;
+    memcpy(t->sound_name, s->name, sizeof t->sound_name);
+    t->preset = s->preset;
+}
+
+int qd_track_start_sound(int i) { return QD_TRACK_DEF[i < 0 ? 0 : i >= QD_NTRACK ? QD_NTRACK - 1 : i].preset + 1; }
+
+void qd_track_reset_sound(qd_track_t *t, int i)
+{
+    qd_track_load_preset(t, QD_TRACK_DEF[i < 0 ? 0 : i >= QD_NTRACK ? QD_NTRACK - 1 : i].preset);
+}
+
+void qd_model_bind(qd_model_t *m)
+{
+    int i;
+    for (i = 0; i < QD_NTRACK; i++) {
+        m->t[i].owner.quad_patch = m->t[i].patch;   /* (the FREE LFOs run at the track's sound's rates) */
+        m->t[i].owner.m_v = 0;
+    }
+}
+
+void qd_model_tempo(qd_model_t *m, int bpm)
+{
+    int i;
+    for (i = 0; i < QD_NTRACK; i++)
+        m->t[i].owner.bpm = (int16_t)bpm;
+}
+
+void qd_model_init(qd_model_t *m)
+{
+    int i;
+    memset(m, 0, sizeof *m);
+    for (i = 0; i < QD_NTRACK; i++) {
+        qd_track_t *t = &m->t[i];
+        qd_track_name_default(t, i);
+        qd_track_load_preset(t, QD_TRACK_DEF[i].preset);
+        t->mix.level = QD_MIX_LEVEL_DEFAULT;
+        t->mix.pan = 0;
+        t->mix.reverb = QD_MIX_REVERB_DEFAULT;
+        t->mix.delay = t->mix.chorus = 0;
+        t->mix.dry = QD_MIX_DRY_DEFAULT;
+        t->mix.g_lvl = t->mix.g_send[0] = t->mix.g_send[1] = t->mix.g_send[2] = 4096;
+        t->limit = QD_TRACK_DEF[i].limit;
+        t->reserve = 0;
+        qd_quad_owner_init(&t->owner);
+    }
+    qd_model_bind(m);
+}

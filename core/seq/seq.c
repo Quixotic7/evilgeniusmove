@@ -1,0 +1,1473 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+ * distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+/* The sequencer (seq.h). */
+#include <string.h>
+
+#include "seq.h"
+#include "qd_div.h"                             /* (P2.4: no 64-bit division routine in the audio path) */
+#include "sounds.h"
+
+#define QD_TIE_SKIP 8                   /* OFFs held back for a TIE, per track (qd_seq_t.skip_*) */
+
+static uint64_t splitmix(uint64_t z)
+{
+    z += 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+uint32_t qd_seq_roll(uint64_t seed, int track, int64_t n)
+{
+    uint32_t r;
+    qd_udivmod64(splitmix(seed ^ ((uint64_t)(track & 255) << 56) ^ (uint64_t)n), 100u, &r);
+    return r;
+}
+
+uint32_t qd_seq_fn_roll(uint64_t seed, int track, int64_t n, int salt, uint32_t m)
+{
+    uint32_t r = 0;
+    if (m)
+        qd_udivmod64(splitmix(seed ^ ((uint64_t)(track & 255) << 56) ^ (uint64_t)n ^ ((uint64_t)salt << 40)), m, &r);
+    return r;
+}
+
+/* a pattern's seed: the run's, mixed with where the pattern started (a chain repeated rolls anew) */
+#if QD_CLIPS
+#define CLIPS(s) ((s)->clips)
+#else
+#define CLIPS(s) 0                                      /* (the device: no clips, their code never runs) */
+#endif
+
+static uint64_t seg_seed(const qd_seq_t *s, int64_t origin) { return splitmix(s->seed_play ^ (uint64_t)origin); }
+
+static int64_t L_of(const qd_pattern_t *P, int t) { return qd_rate_ticks(qd_tset_rate(&P->trk[t])); }
+static int len_of(const qd_pattern_t *P, int t) { return qd_track_len(&P->trk[t]); }
+
+/* ---------------------------------------------------------------- the queue --- */
+static int ev_less(const qd_sev_t *a, const qd_sev_t *b)
+{
+    if (a->tick != b->tick)
+        return a->tick < b->tick;
+    if (a->kind != b->kind)
+        return a->kind < b->kind;
+    if (a->track != b->track)
+        return a->track < b->track;
+    return a->seq < b->seq;
+}
+
+static void heap_up(qd_sev_t *h, int i)
+{
+    while (i > 0) {
+        const int p = (i - 1) / 2;
+        qd_sev_t x;
+        if (!ev_less(&h[i], &h[p]))
+            break;
+        x = h[i], h[i] = h[p], h[p] = x;
+        i = p;
+    }
+}
+
+static void heap_down(qd_sev_t *h, int n, int i)
+{
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i;
+        qd_sev_t x;
+        if (l < n && ev_less(&h[l], &h[m]))
+            m = l;
+        if (r < n && ev_less(&h[r], &h[m]))
+            m = r;
+        if (m == i)
+            break;
+        x = h[i], h[i] = h[m], h[m] = x;
+        i = m;
+    }
+}
+
+static void rec_unref(qd_seq_t *s, int r)
+{
+    if (r < 0 || r >= QD_SEQ_NREC || !s->rec[r].used)
+        return;
+    if (s->rec[r].refs)
+        s->rec[r].refs--;
+    if (!s->rec[r].refs)
+        s->rec[r].used = 0;
+}
+
+#define EV_G(e) ((e)->tick + (e)->dg)                  /* (P2.1b) an event's step's grid tick */
+static int push(qd_seq_t *s, qd_sev_t *e)
+{
+    if (s->nev >= QD_SEQ_NEV) {
+        s->dropped_ev++;
+        return 0;
+    }
+    e->seq = s->seqno++;
+    if (e->rec >= 0)
+        s->rec[e->rec].refs++;
+    if (e->kind == QD_EV_TIE)
+        s->tie_pending[e->track]++;
+    s->ev[s->nev] = *e;
+    heap_up(s->ev, s->nev++);
+    return 1;
+}
+
+static int push_at(qd_seq_t *s, qd_sev_t *e, int64_t g)   /* (P2.1b) its step's grid tick g kept as tick's offset */
+{
+    e->dg = (int32_t)(g - e->tick);
+    return push(s, e);
+}
+
+static qd_sev_t pop(qd_seq_t *s)
+{
+    qd_sev_t e = s->ev[0];
+    s->ev[0] = s->ev[--s->nev];
+    heap_down(s->ev, s->nev, 0);
+    if (e.kind == QD_EV_TIE && s->tie_pending[e.track] > 0)
+        s->tie_pending[e.track]--;
+    return e;
+}
+
+static int rec_alloc(qd_seq_t *s)
+{
+    int i;
+    for (i = 0; i < QD_SEQ_NREC; i++)
+        if (!s->rec[i].used) {
+            memset(&s->rec[i], 0, sizeof s->rec[i]);
+            s->rec[i].used = 1;
+            return i;
+        }
+    s->dropped_rec++;
+    return -1;
+}
+
+/* an OFF for (track, note, serial) at tick */
+static void push_off(qd_seq_t *s, int t, int note, uint32_t serial, int64_t tick, int64_t g, int step, int hit)
+{
+    qd_sev_t e;
+    memset(&e, 0, sizeof e);
+    e.step = (uint8_t)step;
+    e.hit = (uint8_t)hit;
+    e.tick = tick;
+    e.gate = 0;
+    e.serial = serial;
+    e.rec = -1;
+    e.kind = QD_EV_OFF;
+    e.track = (uint8_t)t;
+    e.note = (uint8_t)note;
+    push_at(s, &e, g);
+}
+
+/* the OFFs held back for a TIE that will not come: out at tick */
+static void unskip(qd_seq_t *s, int t, int64_t tick)
+{
+    int k;
+    for (k = 0; k < s->skip_n[t]; k++)
+        push_off(s, t, s->skip_note[t][k], s->skip_serial[t][k], tick, tick, 0, 0);
+    s->skip_n[t] = 0;
+}
+
+/* track t's waiting events of steps at or after x dropped (not the OFFs: their notes have started) */
+static void drop_from(qd_seq_t *s, int t, int64_t x, int64_t now_tick)
+{
+    int i, n = 0, ties = 0;
+    for (i = 0; i < s->nev; i++) {
+        qd_sev_t *e = &s->ev[i];
+        if (e->track == t && e->kind != QD_EV_OFF && EV_G(e) >= x) {
+            if (e->kind == QD_EV_TIE) {
+                ties++;
+                if (s->tie_pending[t] > 0)
+                    s->tie_pending[t]--;
+            }
+            rec_unref(s, e->rec);
+            continue;
+        }
+        s->ev[n++] = *e;
+    }
+    s->nev = n;
+    for (i = n / 2 - 1; i >= 0; i--)
+        heap_down(s->ev, n, i);
+    if (ties && !s->tie_pending[t])
+        unskip(s, t, now_tick);
+}
+
+/* ---------------------------------------------------------------- the cursors --- */
+static void cur_enter(qd_seq_t *s, qd_tcur_t *c, int pat, int64_t x)
+{
+    const int t = (int)(c - s->cur_t);
+    c->pat = pat;
+    c->origin = x;
+    c->g = x;
+    c->n = 0;
+    c->idx = 0;
+    if (c->dir < 0 && t >= 0 && t < QD_PAT_NTRACK)      /* P1.3w: in reverse, from the loop's last position */
+        c->idx = len_of(qd_proj_pat(s->proj, pat), t) - 1;
+    c->pass = 0;
+    c->pre = 0;
+}
+
+/* P1.3w: the direction set by a step resolved at grid g (kept to be undone by a rewind) */
+static void dir_set(qd_tcur_t *c, int64_t g, int dir)
+{
+    if ((c->dir < 0 ? -1 : 1) == dir)
+        return;
+    if (c->dn == 8) {                                   /* (the oldest forgotten: a rewind reaches two steps back) */
+        memmove(c->dg, c->dg + 1, 7 * sizeof c->dg[0]);
+        memmove(c->dold, c->dold + 1, 7 * sizeof c->dold[0]);
+        c->dn = 7;
+    }
+    c->dg[c->dn] = g;
+    c->dold[c->dn++] = (int8_t)(c->dir < 0 ? -1 : 1);
+    c->dir = dir;
+}
+
+/* .. undone for the steps at or after x; the playhead's positions there forgotten */
+static void dir_rewind(qd_tcur_t *c, int64_t x)
+{
+    while (c->dn && c->dg[c->dn - 1] >= x)
+        c->dir = c->dold[--c->dn];
+    while (c->rn) {
+        const int i = (c->rw - 1 + 4) % 4;
+        if (c->rg[i] < x)
+            break;
+        c->rw = i;
+        c->rn--;
+    }
+}
+
+#define HIST_OLD INT32_MIN                              /* (P2.1c: an entry rebased out of reach) */
+static int64_t hist_g(const qd_tcur_t *c, int i) { return c->hg[i] == HIST_OLD ? c->hsat : c->hbase + c->hg[i]; }
+static void hist_push(qd_tcur_t *c, int64_t g, int r)
+{
+    if (!c->hn)
+        c->hbase = g;
+    else if (g - c->hbase > 0x40000000LL || g - c->hbase < -0x40000000LL) {   /* (rebased on g) */
+        const int64_t sh = g - c->hbase;
+        int k;
+        for (k = 0; k < c->hn; k++) {                   /* (oldest first: hsat ends the newest put out of reach) */
+            const int i = (c->hw - c->hn + k + 2 * QD_SEQ_NHIST) % QD_SEQ_NHIST;
+            if (c->hg[i] == HIST_OLD)
+                continue;
+            if ((int64_t)c->hg[i] - sh <= (int64_t)HIST_OLD) {
+                c->hsat = c->hbase + c->hg[i];
+                c->hg[i] = HIST_OLD;
+            } else {
+                c->hg[i] = (int32_t)((int64_t)c->hg[i] - sh);
+            }
+        }
+        c->hbase = g;
+    }
+    c->hg[c->hw] = (int32_t)(g - c->hbase);
+    c->hr[c->hw] = (uint8_t)r;
+    c->hw = (c->hw + 1) % QD_SEQ_NHIST;
+    if (c->hn < QD_SEQ_NHIST)
+        c->hn++;
+}
+
+static void hist_drop_from(qd_tcur_t *c, int64_t x)
+{
+    while (c->hn) {
+        const int i = (c->hw - 1 + QD_SEQ_NHIST) % QD_SEQ_NHIST;
+        if (hist_g(c, i) < x)
+            break;
+        c->hw = i;
+        c->hn--;
+    }
+}
+
+/* the state of track t's last conditional step at or before g, from origin on (none: 0) */
+static int hist_at(const qd_tcur_t *c, int64_t g, int64_t origin)
+{
+    int k;
+    for (k = 0; k < c->hn; k++) {
+        const int i = (c->hw - 1 - k + 2 * QD_SEQ_NHIST) % QD_SEQ_NHIST;
+        if (hist_g(c, i) > g)
+            continue;
+        return hist_g(c, i) < origin ? 0 : c->hr[i];
+    }
+    return 0;
+}
+
+/* P2.4: pattern k is in RAM, or (not on the audio side: pattern.h nopage) read in now without a write */
+static int pat_ready(const qd_seq_t *s, int k)
+{
+    return qd_proj_resident(s->proj, k) || (!s->proj->nopage && qd_proj_fetch(s->proj, k));
+}
+
+static void rewind(qd_seq_t *s, int t, int64_t x, int pat);
+/* the cursor reaches a queued pattern's start: it enters it (P2.4: when the pattern is in RAM; until then it goes on
+ * in the playing one, and enters later with a rewind: what it resolved from sw_x on dropped) */
+static void cur_fix(qd_seq_t *s, qd_tcur_t *c)
+{
+    const int t = (int)(c - s->cur_t);
+    if (CLIPS(s)) {                                     /* clips: the track's own queued clip at its own tick */
+        if (s->tq[t] >= 0 && c->origin < s->tq_x[t] && c->g >= s->tq_x[t] && pat_ready(s, s->tq[t])) {
+            if (c->g > s->tq_x[t])
+                rewind(s, t, s->tq_x[t], s->tq[t]);
+            else
+                cur_enter(s, c, s->tq[t], s->tq_x[t]);
+        }
+        return;
+    }
+    if (s->sw_pat >= 0 && c->origin < s->sw_x && c->g >= s->sw_x) {
+        if (!pat_ready(s, s->sw_pat)) {
+            s->sw_held = 1;
+            return;
+        }
+        if (s->sw_held)
+            rewind(s, (int)(c - s->cur_t), s->sw_x, s->sw_pat);
+        else
+            cur_enter(s, c, s->sw_pat, s->sw_x);
+    }
+}
+
+static void rewind(qd_seq_t *s, int t, int64_t x, int pat)
+{
+    qd_tcur_t *c = &s->cur_t[t];
+    drop_from(s, t, x, s->tick);
+    hist_drop_from(c, x);
+    dir_rewind(c, x);
+    cur_enter(s, c, pat, x);
+    s->rewinds++;
+}
+
+/* (the capture's: ctl_rec.c) track t's loop starts again `steps` of its steps after its start: the cursor rewound
+ * there (what was resolved from there on dropped); skip: that step not played (its notes sound already) */
+void qd_seq_track_from(qd_seq_t *s, int t, int steps, int skip)
+{
+    qd_tcur_t *c;
+    const qd_pattern_t *P;
+    if (t < 0 || t >= QD_PAT_NTRACK || !s->playing || s->cur_t[t].origin > s->tick)
+        return;
+    c = &s->cur_t[t];
+    P = qd_proj_pat(s->proj, c->pat);
+    rewind(s, t, c->origin + steps * L_of(P, t), c->pat);
+    if (skip) {
+        c->g += L_of(P, t);
+        c->idx = len_of(P, t) > 1;
+        c->n = 1;
+    }
+}
+
+/* P2.4: track t's cursor back from a queued pattern it entered at x into the playing one, from x on (its loop from the
+ * start: what it resolved from x on dropped) */
+static void cur_back(qd_seq_t *s, int t, int64_t x)
+{
+    qd_tcur_t *c = &s->cur_t[t];
+    drop_from(s, t, x, s->tick);
+    hist_drop_from(c, x);
+    dir_rewind(c, x);
+    cur_enter(s, c, s->cur, x);
+    c->origin = s->origin;                              /* (not an entry: the playing pattern goes on) */
+}
+
+/* the switch to pat at tick x (cpos: its place in the chain, -1 none); cursors past x wound back */
+static void schedule(qd_seq_t *s, int64_t x, int pat, int cpos)
+{
+    int t, ready;
+    s->sw_pat = pat;
+    s->sw_x = x;
+    s->sw_cpos = cpos;
+    s->sw_held = 0;
+    ready = pat_ready(s, pat);                          /* P2.4: not in RAM (and not read in now, without a write): */
+    if (!ready) {                                       /* the cursors in a pattern queued before go back to the playing
+                                                         * one (it no longer pinned: tried again); a cursor past x goes on
+                                                         * in the playing one, held (cur_fix) */
+        for (t = 0; t < QD_PAT_NTRACK; t++) {
+            qd_tcur_t *c = &s->cur_t[t];
+            if (c->origin > s->origin && (c->origin != x || c->pat != pat))
+                cur_back(s, t, c->origin);
+        }
+        ready = pat_ready(s, pat);
+    }
+    for (t = 0; t < QD_PAT_NTRACK; t++) {
+        const qd_tcur_t *c = &s->cur_t[t];
+        const int pending = c->origin > s->origin;      /* it entered a pattern that has not started */
+        if (pending && (c->origin != x || c->pat != pat))
+            rewind(s, t, x, pat);
+        else if (!pending && c->g > x) {
+            if (ready)
+                rewind(s, t, x, pat);
+            else
+                s->sw_held = 1;
+        }
+    }
+}
+
+/* ---------------------------------------------------------------- a step resolved --- */
+static void resolve_one(qd_seq_t *s, int t);
+
+static void ensure(qd_seq_t *s, int t, int64_t g)   /* track t resolved through grid tick g */
+{
+    int guard = 0;
+    for (;;) {
+        qd_tcur_t *c = &s->cur_t[t];
+        cur_fix(s, c);
+        if (c->g > g || guard++ > 4096)
+            break;
+        resolve_one(s, t);
+    }
+}
+
+static int cond_ok(qd_seq_t *s, int t, const qd_tcur_t *c, int cond)
+{
+    int a, b;
+    switch (cond) {
+    case QD_COND_ALWAYS:
+        return 1;
+    case QD_COND_FILL:
+        return s->fill;
+    case QD_COND_NFILL:
+        return !s->fill;
+    case QD_COND_PRE:
+        return c->pre;
+    case QD_COND_NPRE:
+        return !c->pre;
+    case QD_COND_NEI:
+    case QD_COND_NNEI: {
+        int r = 0;
+        if (t > 0) {
+            ensure(s, t - 1, c->g);
+            r = hist_at(&s->cur_t[t - 1], c->g, c->origin);
+        }
+        return cond == QD_COND_NEI ? r : !r;
+    }
+    case QD_COND_1ST:
+        return c->pass == 0;
+    case QD_COND_N1ST:
+        return c->pass != 0;
+    default:
+        if (qd_cond_ab_of(cond, &a, &b))
+            return qd_mod64(c->pass, b) == a - 1;
+        return 1;
+    }
+}
+
+static int is_conditional(int cond, int chance)
+{
+    return chance < 100 || cond == QD_COND_FILL || cond == QD_COND_NFILL || cond == QD_COND_1ST ||
+           cond == QD_COND_N1ST || cond >= QD_COND_AB;
+}
+
+/* the ramp's velocity of hit h of n */
+static int ramp_vel(int v, int ramp, int h, int n)
+{
+    int x = v;
+    if (n > 1) {
+        if (ramp == QD_RAMP_UP)
+            x = v * (h + 1) / n;
+        else if (ramp == QD_RAMP_DOWN)
+            x = v * (n - h) / n;
+        else if (ramp == QD_RAMP_ACCENT)
+            x = h ? v * 5 / 8 : v;
+    }
+    return x < 1 ? 1 : x > 127 ? 127 : x;
+}
+
+/* the trig's record: the patch (the step's sound lock: a pool sound, else the track's sound; its locks over it), the
+ * own mask, the mix locks, the locks as they are */
+static void fill_rec(const qd_seq_t *s, qd_trec_t *r, int t, int step, const qd_tcur_t *c, const qd_pattern_t *P,
+                     const qd_rstep_t *st)
+{
+    int n, k;
+    const qd_lock_t *lk = qd_locks(P, t, step, &n);
+    r->track = (uint8_t)t;
+    r->type = (uint8_t)st->type;
+    r->sound = (uint8_t)st->sound;
+    r->step = (int16_t)step;
+    r->pat = (int16_t)c->pat;
+    if (st->sound && !qd_sound_ready(s->proj, st->sound) && s->proj->nopage)
+        s->proj->snd_miss++;                            /* (P2.4: the audio side reads no sound in: the track's) */
+    if (st->sound && (qd_sound_ready(s->proj, st->sound) || !s->proj->nopage)) {
+        memcpy(r->patch, qd_sound_patch(s->proj, st->sound), sizeof r->patch);
+        {   /* (every patch value its own) */
+            int w;
+            for (w = 0; w < (QD_QUAD_NP + 31) / 32; w++)
+                r->at.own[w] = w < QD_QUAD_NP / 32 ? 0xFFFFFFFFu : (1u << (QD_QUAD_NP % 32)) - 1u;
+        }
+    } else {
+        memcpy(r->patch, s->pv_patch[t] ? s->pv_patch[t] : P->snd[t].patch, sizeof r->patch);   /* (P1.5a: its
+                                                         * pattern's track sound; P1.5t: the browser's preview) */
+    }
+    r->nlk = 0;
+    r->slide_m = 0;
+    memset(r->lkm, 0, sizeof r->lkm);
+    for (k = 0; k < n; k++) {
+        const int id = lk[k].id;
+        if (id == QD_QP_PORT || id == QD_QP_PTIM || id == QD_QP_PSLOPE) {   /* (2026-10-26: the SLIDE, for the next
+                                                         * note: not this one's patch) */
+            const int j = id == QD_QP_PORT ? 0 : id == QD_QP_PTIM ? 1 : 2;
+            r->slide_m |= (uint8_t)(1u << j);
+            r->slide_v[j] = lk[k].value;
+            continue;
+        }
+        if (id < QD_LK_N)
+            r->lkm[id >> 5] |= 1u << (id & 31), r->nlk++;
+        if (id < QD_QUAD_NP) {
+            r->patch[id] = lk[k].value;
+            r->at.own[id >> 5] |= 1u << (id & 31);
+        } else if (id < QD_LK_N) {
+            r->at.mixm |= (uint16_t)(1u << (id - QD_LK_PAN));
+            r->at.mixv[id - QD_LK_PAN] = lk[k].value;
+        }
+    }
+}
+
+static void ev_base(qd_sev_t *e, int t, int step, int rec, int kind)
+{
+    memset(e, 0, sizeof *e);                            /* (P2.1b: its grid tick given at the push) */
+    e->rec = (int16_t)rec;
+    e->kind = (uint8_t)kind;
+    e->track = (uint8_t)t;
+    e->step = (uint8_t)step;
+}
+
+static void emit_step(qd_seq_t *s, int t, int step, const qd_tcur_t *c, const qd_pattern_t *P, const qd_rstep_t *st,
+                      int64_t L)
+{
+    const qd_tset_t *ts = &P->trk[t];
+    const int type = st->type, le = qd_len_eighths(st->len);
+    /* (P2.4: in 32 bits: L <= 2,419,200 (a dotted 1/1), so (swing - 50) L, micro L and L le / 8 fit; the same
+     * truncated quotients as the 64-bit ones) */
+    const int32_t L32 = (int32_t)L;
+    const int64_t sw = ts->swing && (c->idx & 1) ? (int64_t)((P->swing - 50) * L32 / 50) : 0;
+    const int64_t start = c->g + sw + (int64_t)((c->dir < 0 ? -st->micro : st->micro) * L32 / 24);   /* (P1.3w:
+                                                         * mirrored in reverse) */
+    const int64_t gate_all = le < 0 ? -1 : (int64_t)((uint32_t)L32 * (uint32_t)le / 8u);
+    uint8_t notes[QD_NNOTE];
+    int nn = st->nn, k, h, ri = rec_alloc(s);
+    qd_sev_t e;
+    if (ri < 0)
+        return;
+    fill_rec(s, &s->rec[ri], t, step, c, P, st);
+    for (k = 0; k < nn; k++) {
+        const int x = st->notes[k] + ts->transpose;
+        notes[k] = (uint8_t)(x < 1 ? 1 : x > 127 ? 127 : x);
+    }
+    if (type == QD_TRIG_LOCK) {
+        ev_base(&e, t, step, ri, QD_EV_LOCK);
+        e.tick = start;
+        push_at(s, &e, c->g);
+    } else if (type == QD_TRIG_TIE && ts->limit == 1) {   /* MONO: legato into the sounding voice */
+        if (nn) {
+            ev_base(&e, t, step, ri, QD_EV_TIE);
+            e.tick = start;
+            e.note = notes[0];
+            e.vel = (uint8_t)st->vel;
+            e.gate = (int32_t)gate_all;
+            push_at(s, &e, c->g);
+        }
+    } else {                                            /* NOTE (and TIE on a POLY track: a NOTE) */
+        const int nh = st->ratch, ramp = st->ramp;
+        const int64_t slice = L32 / nh, strum = (int64_t)(st->strum * L32 / 24);
+        for (h = 0; h < nh; h++) {
+            int64_t gate;
+            if (nh == 1)
+                gate = gate_all;
+            else if (gate_all < 0)
+                gate = h < nh - 1 ? slice : -1;         /* INF: the last hit holds */
+            else if (gate_all <= L)
+                gate = (int32_t)gate_all / nh;          /* a step or less: that part of each slice */
+            else
+                gate = h < nh - 1 ? slice : gate_all - (nh - 1) * slice;   /* the last hit holds to the length */
+            for (k = 0; k < nn; k++) {
+                ev_base(&e, t, step, ri, QD_EV_ON);
+                e.tick = start + h * slice + k * strum;
+                e.note = notes[k];
+                e.vel = (uint8_t)ramp_vel(st->vel, ramp, h, nh);
+                e.gate = (int32_t)gate;
+                e.hit = (uint8_t)h;
+                push_at(s, &e, c->g);
+            }
+        }
+    }
+    if (!s->rec[ri].refs)
+        s->rec[ri].used = 0;
+}
+
+/* P1.3w: the cursor's next position after the step at position c->idx (resolved at grid g0, its count n0), fn its
+ * function if it fired (else 0) */
+static void advance(qd_seq_t *s, int t, qd_tcur_t *c, const qd_pattern_t *P, int len, int fn, int64_t g0, int64_t n0)
+{
+    const uint64_t seed = seg_seed(s, c->origin);
+    int f = fn, d;
+    if (f == QD_FN_RFUNC)                               /* one of none / restart / reverse / forward / flip */
+        f = (int)qd_seq_fn_roll(seed, t, n0, 2, 5u);
+    switch (f) {
+    case QD_FN_RESTART:
+        c->idx = c->dir < 0 ? len - 1 : 0;
+        c->pass = 0;
+        return;
+    case QD_FN_REVERSE: dir_set(c, g0, -1); break;
+    case QD_FN_FORWARD: dir_set(c, g0, 1); break;
+    case QD_FN_FLIP: dir_set(c, g0, c->dir < 0 ? 1 : -1); break;
+    case QD_FN_RJUMP:
+        c->idx = (int)qd_seq_fn_roll(seed, t, n0, 1, (uint32_t)len);
+        return;
+    default:
+        if (QD_FN_IS_LEAP(f)) {                         /* P1.3y: LEAP n: n positions on in the playing direction, round
+                                                         * the loop (a pass a wrap) */
+            int x = c->idx + (c->dir < 0 ? -1 : 1) * QD_FN_LEAP_N(f);
+            while (x >= len)
+                x -= len, c->pass++;
+            while (x < 0)
+                x += len, c->pass++;
+            c->idx = x;
+            return;
+        }
+        if (f >= QD_FN_JUMP && f < QD_FN_LEAP) {        /* JUMP n: its position (outside the loop: the start) */
+            const int pos = qd_track_step_pos(&P->trk[t], f - QD_FN_JUMP);
+            c->idx = pos < 0 || pos >= len ? 0 : pos;
+            return;
+        }
+        break;
+    }
+    d = c->dir < 0 ? -1 : 1;
+    c->idx += d;
+    if (c->idx >= len) {
+        c->idx = 0;
+        c->pass++;
+    } else if (c->idx < 0) {
+        c->idx = len - 1;
+        c->pass++;
+    }
+}
+
+static void resolve_one(qd_seq_t *s, int t)
+{
+    qd_tcur_t *c = &s->cur_t[t];
+    const qd_pattern_t *P;
+    qd_rstep_t st;
+    int64_t L, g0, n0;
+    int len, step, fn = 0;
+    cur_fix(s, c);
+    P = qd_proj_pat(s->proj, c->pat);
+    L = L_of(P, t);
+    len = len_of(P, t);
+    if (c->idx >= len || c->idx < 0) {                  /* (the loop shortened under the cursor) */
+        c->idx = c->dir < 0 ? len - 1 : 0;
+        c->pass++;
+    }
+    step = qd_track_loop_step(&P->trk[t], c->idx);      /* the loop's position -> its page's step (PLAN §8b) */
+    qd_step_resolve(P, t, step, &st);                   /* the track's defaults where the step does not override */
+    if (t + 1 == s->ovr_t) {                            /* 2026-11-13: a W key held (the step keyboard, LIVE): its
+                                                         * value for every step that plays */
+        const int v = s->ovr_v;
+        switch (s->ovr_pm) {
+        case QD_PM_VEL: st.vel = v; break;
+        case QD_PM_LEN: st.len = v; break;
+        case QD_PM_MICRO: st.micro = v; break;
+        case QD_PM_RATCH: st.ratch = (v & 7) + 1, st.ramp = v >> 4; break;
+        case QD_PM_CHANCE: st.chance = v; break;
+        case QD_PM_COND: st.cond = v; break;
+        default: break;
+        }
+    }
+    c->rg[c->rw] = c->g;                                /* (the playhead: this position from this grid tick) */
+    c->ridx[c->rw] = (int16_t)c->idx;
+    c->rw = (c->rw + 1) % 4;
+    if (c->rn < 4)
+        c->rn++;
+    if (st.on) {
+        const int conditional = is_conditional(st.cond, st.chance);
+        int ok = cond_ok(s, t, c, st.cond);
+        s->resolved++;
+        if (ok && st.chance < 100)
+            ok = qd_seq_roll(seg_seed(s, c->origin), t, c->n) < (uint32_t)st.chance;
+        if (conditional) {
+            c->pre = ok;
+            hist_push(c, c->g, ok);
+        }
+        if (ok) {
+            emit_step(s, t, step, c, P, &st, L);
+            fn = st.func;                               /* P1.3w: a function runs when its step fires */
+        }
+    }
+    g0 = c->g;
+    n0 = c->n;
+    c->g += L;
+    advance(s, t, c, P, len, fn, g0, n0);
+    c->n++;
+}
+
+/* ---------------------------------------------------------------- the transport --- */
+void qd_seq_init(qd_seq_t *s, qd_project_t *proj, qd_model_t *model)
+{
+    memset(s, 0, sizeof *s);
+    s->proj = proj;
+    s->model = model;
+    s->mbpm = 120000;
+    s->seed = 0x5155414452494C4Cull;                   /* "QUADRILL" */
+    s->sw_pat = -1;
+    s->sw_cpos = -1;
+}
+
+void qd_seq_seed(qd_seq_t *s, uint64_t seed) { s->seed = seed; }
+
+void qd_seq_tempo_mbpm(qd_seq_t *s, int32_t mbpm)
+{
+    s->mbpm = mbpm < 30000 ? 30000 : mbpm > 300000 ? 300000 : mbpm;
+}
+
+int qd_seq_ext_running(const qd_seq_t *s) { return s->ext && s->playing && !s->ext_wait; }
+
+int qd_seq_bpm(const qd_seq_t *s)
+{
+    if (qd_seq_ext_running(s) && s->clk_adv > 0)        /* subticks a sample -> BPM: adv / 8 / 1000 x 1000 */
+        return (int)qd_div64(s->clk_adv + 4000, 8000);   /* (8 x milli-BPM subticks a sample) */
+    return (s->mbpm + 500) / 1000;
+}
+
+void qd_seq_fill(qd_seq_t *s, int on) { s->fill = !!on; }
+
+/* P2.4: the position and its tick together (pos / QD_SUB once, not at every look) */
+static void pos_set(qd_seq_t *s, int64_t pos)
+{
+    s->pos = pos;
+    s->tick = qd_divmod64(pos, QD_SUB, &s->tick_rem);
+}
+
+static void start_at(qd_seq_t *s, int pat)
+{
+    int t;
+    s->cur = pat;
+    s->origin = 0;
+    pos_set(s, 0);
+    s->nev = 0;
+    s->nstart = 1;
+    s->seed_play = s->seed;
+    s->sw_pat = -1;
+    s->sw_cpos = -1;
+    s->sw_held = 0;
+    for (t = 0; t < QD_SEQ_NREC; t++)
+        s->rec[t].used = 0;
+    for (t = 0; t < QD_PAT_NTRACK; t++) {
+        qd_tcur_t *c = &s->cur_t[t];
+        memset(c, 0, sizeof *c);
+        if (CLIPS(s)) {                                 /* clips: each track its own (stopped: silent from the start) */
+            cur_enter(s, c, s->tpat[t], 0);
+            s->torigin[t] = 0;
+            s->tq[t] = -1;
+        } else
+            cur_enter(s, c, pat, 0);
+        s->inf_n[t] = 0;
+        s->tie_pending[t] = 0;
+        s->flash_step[t] = -1;
+        s->heard_step[t] = -1;
+        s->heard_g[t] = -1;
+        s->skip_n[t] = 0;
+    }
+    if (!s->ext && !CLIPS(s))                           /* (clips: the tempo is the project's, left alone) */
+        qd_seq_tempo_mbpm(s, (int32_t)qd_proj_pat(s->proj, pat)->bpm * 1000);
+    if (s->nchain > 1 && !CLIPS(s)) {
+        const int64_t m = qd_pat_master_ticks(qd_proj_pat(s->proj, pat));
+        if (m > 0)
+            schedule(s, m, s->chain[1], 1);
+    }
+}
+
+void qd_seq_play(qd_seq_t *s)
+{
+    s->ext = 0;
+    s->ext_wait = 0;
+    if (s->nchain > 0) {
+        s->cpos = 0;
+        s->cur = s->chain[0];
+    }
+    start_at(s, s->cur);
+    s->playing = 1;
+}
+
+/* every note of the sequencer's out now (its waiting OFFs, the INF notes, the OFFs held for a TIE); the queue empty */
+static void all_off(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
+{
+    int t, k;
+    qd_seq_ev_t o;
+    memset(&o, 0, sizeof o);
+    o.sample = s->now;
+    o.tick = s->tick;
+    o.kind = QD_EV_OFF;
+    o.gate = 0;
+    o.pat = s->cur;
+    while (s->nev) {
+        const qd_sev_t e = pop(s);
+        if (e.kind == QD_EV_OFF && out) {
+            o.track = e.track, o.note = e.note, o.serial = e.serial, o.step = e.step;
+            out(ctx, &o);
+        }
+        rec_unref(s, e.rec);
+    }
+    for (t = 0; t < QD_PAT_NTRACK; t++) {
+        for (k = 0; k < s->inf_n[t] && out; k++) {
+            o.track = t, o.note = s->inf_note[t][k], o.serial = s->inf_serial[t][k];
+            out(ctx, &o);
+        }
+        for (k = 0; k < s->skip_n[t] && out; k++) {
+            o.track = t, o.note = s->skip_note[t][k], o.serial = s->skip_serial[t][k];
+            out(ctx, &o);
+        }
+        s->inf_n[t] = 0;
+        s->skip_n[t] = 0;
+        s->tie_pending[t] = 0;
+    }
+    for (t = 0; t < QD_SEQ_NREC; t++)
+        s->rec[t].used = 0;
+}
+
+void qd_seq_stop(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
+{
+    if (!s->playing)
+        return;
+    all_off(s, out, ctx);
+    s->playing = 0;
+    s->ext = 0;
+    s->ext_wait = 0;
+    pos_set(s, 0);
+    s->sw_pat = -1;
+    if (CLIPS(s)) {                                     /* clips: what was queued taken; a stopped track stays so */
+        int t;
+        for (t = 0; t < QD_PAT_NTRACK; t++) {
+            if (s->tq[t] >= 0) {
+                s->tpat[t] = s->tq[t];
+                s->toff[t] = INT64_MAX;
+            } else if (s->toff[t] != INT64_MAX && s->ton[t] == INT64_MAX)
+                s->toff[t] = INT64_MIN;
+            else
+                s->toff[t] = INT64_MAX;
+            s->ton[t] = INT64_MAX;
+            s->tq[t] = -1;
+        }
+    }
+}
+
+int64_t qd_seq_tick(const qd_seq_t *s) { return s->tick; }
+
+static int64_t next_boundary(const qd_seq_t *s, int64_t tick)
+{
+    const int64_t m = qd_pat_master_ticks(qd_proj_pat(s->proj, s->cur));
+    if (m <= 0)
+        return -1;
+    return s->origin + (qd_div64(tick - s->origin, (int32_t)m) + 1) * m;   /* (m: 16 .. 1024 16ths) */
+}
+
+const char *qd_launch_name(int launch)
+{
+    static const char *const N[QD_NLAUNCH] = {"END", "BAR", "BEAT", "NOW"};
+    return launch >= 0 && launch < QD_NLAUNCH ? N[launch] : "?";
+}
+
+void qd_seq_select(qd_seq_t *s, int pat, int immediate)
+{
+    qd_seq_select_at(s, pat, immediate ? QD_LAUNCH_NOW : QD_LAUNCH_END);
+}
+
+void qd_seq_select_at(qd_seq_t *s, int pat, int launch)
+{
+    int64_t x;
+    if (pat < 0 || pat >= QD_NPAT)
+        return;
+    s->nchain = 0;
+    if (CLIPS(s)) {                                     /* clips: every track's part of it (a scene) */
+        int t;
+        for (t = 0; t < QD_PAT_NTRACK; t++)
+            qd_seq_launch(s, t, pat, launch);
+        if (!s->playing)
+            s->cur = pat;
+        return;
+    }
+    if (!s->playing) {
+        s->cur = pat;
+        s->sw_pat = -1;
+        if (!s->ext)
+            qd_seq_tempo_mbpm(s, (int32_t)qd_proj_pat(s->proj, pat)->bpm * 1000);
+        return;
+    }
+    {
+        const int64_t now = (s->tick + (s->tick_rem > 0));
+        if (launch == QD_LAUNCH_NOW)
+            x = qd_div64(now + QD_TPS - 1, QD_TPS) * QD_TPS;
+        else if (launch == QD_LAUNCH_BAR || launch == QD_LAUNCH_BEAT) {   /* from the playing pattern's start */
+            const int64_t u = (launch == QD_LAUNCH_BAR ? 16 : 4) * (int64_t)QD_TPS, d = now - s->origin;
+            x = s->origin + (d <= 0 ? 0 : qd_div64(d + u - 1, (int32_t)u) * u);
+        } else if (s->sw_pat >= 0)
+            x = s->sw_x;                                /* one already queued: the same change point */
+        else
+            x = next_boundary(s, now);
+    }
+    if (x < 0) {                                        /* master INF: it waits for ever */
+        s->sw_pat = pat;
+        s->sw_x = INT64_MAX / 4;
+        s->sw_cpos = -1;
+        return;
+    }
+    schedule(s, x, pat, -1);
+}
+
+void qd_seq_chain(qd_seq_t *s, const int *pats, int n)
+{
+    int k;
+    n = n < 0 ? 0 : n > QD_SEQ_NCHAIN ? QD_SEQ_NCHAIN : n;
+    for (k = 0; k < n; k++)
+        s->chain[k] = pats[k] < 0 ? 0 : pats[k] >= QD_NPAT ? QD_NPAT - 1 : pats[k];
+    if (!n) {
+        s->nchain = 0;
+        return;
+    }
+    if (!s->playing) {
+        s->nchain = n;
+        s->cpos = 0;
+        s->cur = s->chain[0];
+        return;
+    }
+    {   /* playing: the chain's first at the end of the master length */
+        const int64_t now = (s->tick + (s->tick_rem > 0));
+        const int64_t x = s->sw_pat >= 0 ? s->sw_x : next_boundary(s, now);
+        s->nchain = n;
+        if (x >= 0)
+            schedule(s, x, s->chain[0], 0);
+    }
+}
+
+int qd_seq_queued(const qd_seq_t *s) { return s->playing ? s->sw_pat : -1; }
+
+/* ---------------------------------------------------------------- clips --- */
+void qd_seq_clips(qd_seq_t *s, int on)
+{
+    int t;
+    s->clips = QD_CLIPS && on;
+    if (!QD_CLIPS)
+        return;
+    for (t = 0; t < QD_PAT_NTRACK; t++) {
+        s->tpat[t] = (int8_t)s->cur;
+        s->torigin[t] = s->origin;
+        s->tq[t] = -1;
+        s->toff[t] = s->ton[t] = INT64_MAX;
+    }
+}
+
+/* the tick a launch on track t takes effect (now: the next 16th; BAR / BEAT: from PLAY; END: the end of the track's
+ * loop, its clip's steps at its rate; stopped, the next bar) */
+static int64_t launch_x(const qd_seq_t *s, int t, int launch)
+{
+    const int64_t now = (s->tick + (s->tick_rem > 0));
+    int64_t u;
+    if (launch == QD_LAUNCH_NOW)
+        return qd_div64(now + QD_TPS - 1, QD_TPS) * QD_TPS;
+    if (launch == QD_LAUNCH_END && qd_seq_clip_on(s, t)) {
+        const qd_pattern_t *P = qd_proj_pat(s->proj, s->tpat[t]);
+        const int64_t L = (int64_t)len_of(P, t) * L_of(P, t), d = now - s->torigin[t];
+        if (L > 0 && L < 0x40000000)
+            return s->torigin[t] + (d <= 0 ? 0 : qd_div64(d + L - 1, (int32_t)L) * L);
+    }
+    u = (launch == QD_LAUNCH_BEAT ? 4 : 16) * (int64_t)QD_TPS;
+    return now <= 0 ? 0 : qd_div64(now + u - 1, (int32_t)u) * u;
+}
+
+/* track t's cursor, gone ahead into a clip queued at x, back in the playing one (its loop from x) */
+static void clip_back(qd_seq_t *s, int t)
+{
+    qd_tcur_t *c = &s->cur_t[t];
+    const int64_t x = c->origin;
+    if (x <= s->tick)
+        return;
+    drop_from(s, t, x, s->tick);
+    hist_drop_from(c, x);
+    dir_rewind(c, x);
+    cur_enter(s, c, s->tpat[t], x);
+    c->origin = s->torigin[t];                          /* (not an entry: the playing clip goes on) */
+}
+
+void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
+{
+    int64_t x;
+    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK || pat < 0 || pat >= QD_NPAT)
+        return;
+    if (!s->playing) {
+        s->tpat[t] = (int8_t)pat;
+        s->tq[t] = -1;
+        s->toff[t] = s->ton[t] = INT64_MAX;
+        return;
+    }
+    x = launch_x(s, t, launch);
+    if (s->toff[t] > x)                                 /* a stop after it: gone */
+        s->toff[t] = INT64_MAX;
+    else if (s->ton[t] > x)                             /* stopped (or stopping first): heard again from x */
+        s->ton[t] = x;
+    if (s->cur_t[t].origin > s->tick)                   /* (a clip queued before, entered ahead: out of it) */
+        clip_back(s, t);
+    s->tq[t] = (int8_t)pat;
+    s->tq_x[t] = x;
+    if (s->cur_t[t].g > x && pat_ready(s, pat))         /* (resolved past x already: from x again) */
+        rewind(s, t, x, pat);
+}
+
+void qd_seq_stop_track(qd_seq_t *s, int t, int launch)
+{
+    int64_t x;
+    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK)
+        return;
+    if (!s->playing) {
+        s->tq[t] = -1;
+        s->toff[t] = INT64_MIN;
+        s->ton[t] = INT64_MAX;
+        return;
+    }
+    if (s->tq[t] >= 0) {                                /* a launch queued: called off */
+        s->tq[t] = -1;
+        if (s->cur_t[t].origin > s->tick)
+            clip_back(s, t);
+    }
+    if (s->toff[t] <= s->tick && s->ton[t] == INT64_MAX)   /* stopped already */
+        return;
+    if (s->toff[t] <= s->tick && s->ton[t] > s->tick) {   /* stopped, a start queued: it stays stopped */
+        s->ton[t] = INT64_MAX;
+        return;
+    }
+    x = launch_x(s, t, launch == QD_LAUNCH_END ? QD_LAUNCH_BAR : launch);
+    s->toff[t] = x;
+    s->ton[t] = INT64_MAX;
+}
+
+int qd_seq_clip(const qd_seq_t *s, int t) { return CLIPS(s) && t >= 0 && t < QD_PAT_NTRACK ? s->tpat[t] : s->cur; }
+
+int qd_seq_clip_on(const qd_seq_t *s, int t)
+{
+    if (!CLIPS(s))
+        return 1;
+    if (t < 0 || t >= QD_PAT_NTRACK)
+        return 0;
+    if (!s->playing)
+        return s->toff[t] == INT64_MAX;
+    return !(s->toff[t] <= s->tick && s->tick < s->ton[t]);
+}
+
+int qd_seq_clip_queued(const qd_seq_t *s, int t)
+{
+    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK || !s->playing)
+        return -1;
+    if (s->tq[t] >= 0)
+        return s->tq[t];
+    return s->toff[t] > s->tick && s->toff[t] != INT64_MAX ? -2 : -1;
+}
+
+int64_t qd_seq_to_change(const qd_seq_t *s)
+{
+    if (!s->playing || s->sw_pat < 0 || s->sw_x >= INT64_MAX / 8)
+        return 0;
+    return s->sw_x - s->tick;
+}
+
+/* the queued pattern starts (its tick has come) */
+static void take_switch(qd_seq_t *s)
+{
+    const int64_t x = s->sw_x;
+    int t;
+    for (t = 0; t < QD_PAT_NTRACK; t++) {               /* (every cursor into it: they are ahead, normally) */
+        int guard = 0;
+        while (s->cur_t[t].origin < x && guard++ < 4096)
+            resolve_one(s, t);
+    }
+    s->cur = s->sw_pat;
+    s->origin = x;
+    s->nstart++;
+    if (s->sw_cpos >= 0)
+        s->cpos = s->sw_cpos;
+    s->sw_pat = -1;
+    s->sw_cpos = -1;
+    s->sw_held = 0;
+    if (!s->ext)
+        qd_seq_tempo_mbpm(s, (int32_t)qd_proj_pat(s->proj, s->cur)->bpm * 1000);
+    if (s->nchain > 1) {
+        const int np = (s->cpos + 1) % s->nchain;
+        const int64_t m = qd_pat_master_ticks(qd_proj_pat(s->proj, s->cur));
+        if (m > 0)
+            schedule(s, x + m, s->chain[np], np);
+    }
+}
+
+/* P2.4: the change's pattern is not in RAM at its tick (the audio side reads nothing in): the playing pattern goes on,
+ * the change waits for the next master boundary (it was on one) or the next 16th, counted */
+static void sw_hold(qd_seq_t *s)
+{
+    const int64_t m = qd_pat_master_ticks(qd_proj_pat(s->proj, s->cur));
+    if (m > 0 && !qd_mod64(s->sw_x - s->origin, (int32_t)m))
+        s->sw_x = next_boundary(s, s->sw_x);
+    else
+        s->sw_x += QD_TPS;
+    s->sw_held = 1;
+    s->sw_late++;
+}
+
+/* an event out: its sample in this block (P0 at the block's first sample, adv subticks a sample) */
+static void dispatch(qd_seq_t *s, qd_sev_t *e, int64_t pos0, int64_t adv, qd_seq_out_fn out, void *ctx)
+{
+    const int64_t d = e->tick * QD_SUB - pos0;
+    int64_t off = d <= 0 || adv <= 0 ? 0 : qd_div64(d + adv - 1, (int32_t)adv);   /* (adv: subticks a sample, < 2^31) */
+    const int t = e->track;
+    const qd_trec_t *r = e->rec >= 0 ? &s->rec[e->rec] : 0;
+    const qd_pattern_t *P = qd_proj_pat(s->proj, r ? r->pat : s->cur_t[t].pat);
+    qd_seq_ev_t o;
+    int k;
+    off = off > QD_SEQ_BLOCK - 1 ? QD_SEQ_BLOCK - 1 : off;
+    memset(&o, 0, sizeof o);
+    o.sample = s->now + (uint64_t)off;
+    o.tick = e->tick;
+    o.kind = e->kind;
+    o.track = t;
+    o.note = e->note;
+    o.vel = e->vel;
+    o.gate = e->gate;
+    o.serial = e->serial;
+    o.rec = r;
+    o.step = e->step;
+    o.pat = r ? r->pat : s->cur_t[t].pat;
+    o.hit = e->hit;
+    switch (e->kind) {
+    case QD_EV_OFF:
+        if (s->tie_pending[t] > 0 && P->trk[t].limit == 1) {   /* a TIE follows on this MONO track: it holds */
+            if (s->skip_n[t] < QD_TIE_SKIP) {
+                s->skip_note[t][s->skip_n[t]] = e->note;
+                s->skip_serial[t][s->skip_n[t]++] = e->serial;
+            }
+            break;
+        }
+        if (out)
+            out(ctx, &o);
+        break;
+    case QD_EV_LOCK:
+        if (out)
+            out(ctx, &o);
+        break;
+    case QD_EV_ON:
+    case QD_EV_TIE:
+        if (s->heard_g[t] != EV_G(e) || s->heard_step[t] != e->step) {   /* P1.5s: the step coming to play (once a
+                                                         * step) */
+            s->heard_step[t] = e->step;
+            s->heard_g[t] = EV_G(e);
+            s->heard_sample[t] = o.sample;
+        }
+        if (!qd_seq_audible(s, P, t)                    /* a muted (or not soloed) track plays nothing: it runs on */
+            || (CLIPS(s) && s->toff[t] <= EV_G(e) && EV_G(e) < s->ton[t])) {   /* (clips: so does a stopped one) */
+            if (e->kind == QD_EV_TIE && !s->tie_pending[t])
+                unskip(s, t, e->tick);
+            break;
+        }
+        if (e->kind == QD_EV_TIE) {                     /* the TIE takes the held voice (an INF one too): its OFF
+                                                         * ends it */
+            s->skip_n[t] = 0;
+            s->inf_n[t] = 0;
+        }
+        if (s->inf_n[t] && s->inf_g[t] != EV_G(e)) {     /* INF notes: held until the track's next NOTE */
+            qd_seq_ev_t f = o;
+            f.kind = QD_EV_OFF;
+            f.rec = 0;
+            for (k = 0; k < s->inf_n[t]; k++) {
+                f.note = s->inf_note[t][k];
+                f.serial = s->inf_serial[t][k];
+                if (out)
+                    out(ctx, &f);
+            }
+            s->inf_n[t] = 0;
+        }
+        o.serial = ++s->serial ? s->serial : ++s->serial;
+        if (out)
+            out(ctx, &o);
+        s->played++;
+        s->flash_step[t] = e->step;
+        s->flash_tick[t] = e->tick;
+        s->flash_sample[t] = o.sample;
+        if (e->gate >= 0) {
+            push_off(s, t, e->note, o.serial, e->tick + (e->gate > 0 ? e->gate : 1), EV_G(e), e->step, e->hit);
+        } else if (s->inf_n[t] < QD_NNOTE * 8) {
+            s->inf_g[t] = EV_G(e);
+            s->inf_note[t][s->inf_n[t]] = e->note;
+            s->inf_serial[t][s->inf_n[t]++] = o.serial;
+        }
+        break;
+    default:
+        break;
+    }
+    rec_unref(s, e->rec);
+}
+
+void qd_seq_block(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
+{
+    int64_t adv, pos0, pos1, tend, t1, t1m;
+    int32_t r1;
+    int t, guard = 0;
+    s->proj->pat_fb = (int8_t)s->cur;                   /* (P2.4: what a miss plays, playing or not) */
+    if (s->ext && s->now - s->clk_last > (uint64_t)QD_CLOCK_TIMEOUT)
+        qd_seq_midi_stop(s, out, ctx);                  /* P1.3i: no pulse for 0.5 s: the clock is gone, stopped */
+    if (!s->playing || (s->ext && s->ext_wait)) {
+        s->now += QD_SEQ_BLOCK;
+        return;
+    }
+    adv = s->ext ? s->clk_adv : 8 * (int64_t)s->mbpm;
+    pos0 = s->pos;
+    pos1 = pos0 + QD_SEQ_BLOCK * adv;
+    if (s->ext) {
+        const int64_t cap = s->clk_target + (int64_t)QD_CLOCK_TICKS * QD_SUB;
+        pos1 = pos1 > cap ? cap : pos1 < pos0 ? pos0 : pos1;
+    }
+    if (pos1 >= s->pos && pos1 - s->pos < 0x40000000 && s->tick_rem >= 0) {   /* (P2.4: pos1's tick from pos's: 32 bits) */
+        const int32_t u = s->tick_rem + (int32_t)(pos1 - s->pos);
+        t1 = s->tick + u / QD_SUB;
+        r1 = u % QD_SUB;
+    } else {
+        t1 = qd_divmod64(pos1, QD_SUB, &r1);
+    }
+    t1m = pos1 >= 1 ? (r1 ? t1 : t1 - 1) : qd_div64(pos1 - 1, QD_SUB);   /* ((pos1 - 1) / QD_SUB) */
+    while (s->sw_pat >= 0 && s->sw_x <= t1m && guard++ < 64) {   /* (in ticks: a pattern waiting for ever has a huge
+                                                         * sw_x) */
+        if (pat_ready(s, s->sw_pat))
+            take_switch(s);
+        else
+            sw_hold(s);
+    }
+    if (CLIPS(s))                                       /* clips: a queued clip playing from its tick */
+        for (t = 0; t < QD_PAT_NTRACK; t++)
+            if (s->tq[t] >= 0 && s->tq_x[t] <= t1m) {
+                s->tpat[t] = s->tq[t];
+                s->torigin[t] = s->tq_x[t];
+                s->tq[t] = -1;
+            }
+    tend = t1 + (r1 > 0);                               /* ((pos1 + QD_SUB - 1) / QD_SUB: pos1 >= 0) */
+    for (t = 0; t < QD_PAT_NTRACK; t++) {               /* the steps within two of their own steps */
+        int n = 0;
+        for (;;) {
+            qd_tcur_t *c = &s->cur_t[t];
+            cur_fix(s, c);
+            if (c->g >= tend + 2 * L_of(qd_proj_pat(s->proj, c->pat), t) || n++ > 4096)
+                break;
+            resolve_one(s, t);
+        }
+    }
+    while (s->nev && s->ev[0].tick * QD_SUB < pos1) {   /* this block's events */
+        qd_sev_t e = pop(s);
+        dispatch(s, &e, pos0, adv, out, ctx);
+    }
+    s->pos = pos1;
+    s->tick = t1, s->tick_rem = r1;
+    s->now += QD_SEQ_BLOCK;
+}
+
+/* ---------------------------------------------------------------- MIDI clock in --- */
+void qd_seq_midi_start(qd_seq_t *s)
+{
+    if (s->nchain > 0) {
+        s->cpos = 0;
+        s->cur = s->chain[0];
+    }
+    s->ext = 1;
+    start_at(s, s->cur);
+    s->playing = 1;
+    s->ext_wait = 1;
+    s->clk_niv = s->clk_wiv = 0;
+    s->clk_last = s->now;                               /* (P1.3i: the timeout counts from here) */
+}
+
+void qd_seq_midi_continue(qd_seq_t *s)
+{
+    if (s->playing && !s->ext_wait)
+        return;
+    s->ext = 1;
+    s->playing = 1;
+    s->ext_wait = 1;
+    s->clk_last = s->now;
+}
+
+/* stopped by the clock: the notes out, the position kept; the cursors wound back to it (CONTINUE resolves again) */
+void qd_seq_midi_stop(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
+{
+    const int64_t now = (s->tick + (s->tick_rem > 0));
+    int t;
+    s->ext = 0;                                         /* P1.3i: stopped, the tempo is the unit's again (CONTINUE
+                                                         * makes it the clock's) */
+    if (!s->playing) {
+        s->ext_wait = 0;
+        return;
+    }
+    all_off(s, out, ctx);
+    for (t = 0; t < QD_PAT_NTRACK; t++) {
+        qd_tcur_t *c = &s->cur_t[t];
+        const qd_pattern_t *P = qd_proj_pat(s->proj, c->pat);
+        const int64_t L = L_of(P, t);
+        const int len = len_of(P, t);
+        while (c->n > 0 && c->g - L >= now) {
+            c->g -= L;
+            c->n--;
+            if (--c->idx < 0) {
+                c->idx = len - 1;
+                c->pass--;
+            }
+        }
+        hist_drop_from(c, now);
+    }
+    s->playing = 0;
+    s->ext_wait = 0;
+}
+
+void qd_seq_midi_clock(qd_seq_t *s)
+{
+    const int64_t pulse = (int64_t)QD_CLOCK_TICKS * QD_SUB;
+    uint64_t sum = 0;
+    int k;
+    if (!s->ext || !s->playing)
+        return;
+    if (s->ext_wait) {                                  /* the first pulse after START / CONTINUE: it runs */
+        s->ext_wait = 0;
+        s->clk_target = s->pos;
+        s->clk_adv = s->clk_niv ? s->clk_adv : 8 * (int64_t)s->mbpm;
+        s->clk_last = s->now;
+        s->clk_pulses = 0;
+        return;
+    }
+    {
+        const uint64_t d = s->now - s->clk_last;
+        s->clk_last = s->now;
+        s->clk_iv[s->clk_wiv] = (uint32_t)(d > 44100u ? 44100u : d ? d : 1u);
+        s->clk_wiv = (s->clk_wiv + 1) % 24;
+        if (s->clk_niv < 24)
+            s->clk_niv++;
+    }
+    s->clk_target += pulse;
+    s->clk_pulses++;
+    if (s->pos < s->clk_target)                         /* behind: to the pulse at once */
+        pos_set(s, s->clk_target);
+    for (k = 0; k < s->clk_niv; k++)
+        sum += s->clk_iv[k];
+    s->clk_adv = sum >> 32 ? 1 : (int64_t)qd_udiv64((uint64_t)(pulse * s->clk_niv + (int64_t)sum / 2), (uint32_t)sum);
+    /* (the last intervals' tempo. P2.4: 32-bit divisions; intervals summing past 2^32 samples, hours a pulse: a
+     * subtick a sample, as the 64-bit quotient's 1 there) */
+}
+
+/* ---------------------------------------------------------------- the view --- */
+int qd_seq_audible(const qd_seq_t *s, const qd_pattern_t *P, int t)
+{
+    if (P->trk[t].mute || ((s->mute >> t) & 1u))
+        return 0;
+    return !s->solo || ((s->solo >> t) & 1u);
+}
+
+int qd_seq_track_step(const qd_seq_t *s, int t)
+{
+    const qd_pattern_t *P;
+    if (t < 0 || t >= QD_PAT_NTRACK || !s->playing)
+        return -1;
+    P = qd_seq_track_pat(s, t);
+    return qd_track_loop_step(&P->trk[t], qd_seq_track_pos_i(s, t));
+}
+
+const qd_pattern_t *qd_seq_track_pat(const qd_seq_t *s, int t)
+{
+    if (t < 0 || t >= QD_PAT_NTRACK)
+        t = 0;
+    if (CLIPS(s))                                       /* clips: the track's own (its next one entered ahead: the one
+                                                         * still playing) */
+        return qd_proj_pat(s->proj, !s->playing || s->cur_t[t].origin > s->tick ? s->tpat[t] : s->cur_t[t].pat);
+    if (!s->playing)
+        return qd_proj_pat(s->proj, s->cur);
+    return qd_proj_pat(s->proj, s->cur_t[t].origin > s->tick ? s->cur : s->cur_t[t].pat);
+}
+
+/* P2.4: the playhead as a fraction of steps num / den (exact: no double on the unit) */
+void qd_seq_track_pos_q(const qd_seq_t *s, int t, int64_t *num, int64_t *den)
+{
+    const qd_tcur_t *c;
+    const qd_pattern_t *P;
+    int64_t T, L, len, x;
+    *num = 0, *den = 1;
+    if (t < 0 || t >= QD_PAT_NTRACK || !s->playing)
+        return;
+    c = &s->cur_t[t];
+    P = qd_proj_pat(s->proj, c->pat);
+    len = len_of(P, t);
+    T = s->tick;
+    L = L_of(P, t);
+    if (c->origin > T) {                                /* (the cursor is in the next pattern already: the old one's
+                                                         * head, from that pattern's start, its loop's length wrapped) */
+        const qd_pattern_t *Q = qd_proj_pat(s->proj, CLIPS(s) ? s->tpat[t] : s->cur);
+        const int64_t LQ = L_of(Q, t), lq = len_of(Q, t);
+        x = qd_mod64(T - (CLIPS(s) ? s->torigin[t] : s->origin), (int32_t)(lq * LQ));   /* (lq LQ: at most 128 x 2,419,200) */
+        *num = x < 0 ? 0 : x;
+        *den = LQ;
+        return;
+    }
+    x = c->idx * L - (c->g - T);                        /* (in 1 / L steps) */
+    {   /* P1.3w: the position resolved last at or before now (reverse, jumps), and how far into its step */
+        int k;
+        for (k = 0; k < c->rn; k++) {
+            const int i = (c->rw - 1 - k + 8) % 4;
+            if (c->rg[i] <= T) {
+                x = c->ridx[i] * L + (T - c->rg[i]);
+                break;
+            }
+        }
+    }
+    while (x < 0)
+        x += len * L;
+    while (x >= len * L)
+        x -= len * L;
+    *num = x;
+    *den = L;
+}
+
+float qd_seq_track_pos_f(const qd_seq_t *s, int t)
+{
+    int64_t n, d;
+    qd_seq_track_pos_q(s, t, &n, &d);
+    return qd_ratio_f(n, d);
+}
+
+int qd_seq_track_pos_i(const qd_seq_t *s, int t)
+{
+    int64_t n, d;
+    qd_seq_track_pos_q(s, t, &n, &d);
+    return (int)qd_div64(n, (int32_t)d);
+}
+
+void qd_seq_live_patch(qd_seq_t *s, int t, int id, int value)
+{
+    int i;
+    if (id < 0 || id >= QD_QUAD_NP)
+        return;
+    for (i = 0; i < QD_SEQ_NREC; i++) {
+        qd_trec_t *r = &s->rec[i];
+        if (r->used && r->track == t && !((r->at.own[id >> 5] >> (id & 31)) & 1u))
+            r->patch[id] = (int16_t)value;
+    }
+}
+
+void qd_seq_preview(qd_seq_t *s, int t, const int16_t *patch)
+{
+    int i, k;
+    if (t < 0 || t >= QD_PAT_NTRACK)
+        return;
+    s->pv_patch[t] = patch;
+    for (i = 0; i < QD_SEQ_NREC; i++) {
+        qd_trec_t *r = &s->rec[i];
+        if (!r->used || r->track != t || r->sound)
+            continue;
+        {   /* (P2.1b: a locked value kept: it is the lock's) */
+            const int16_t *src = patch ? patch : qd_proj_pat(s->proj, r->pat)->snd[t].patch;
+            for (k = 0; k < QD_QUAD_NP; k++)
+                if (!((r->lkm[k >> 5] >> (k & 31)) & 1u))
+                    r->patch[k] = src[k];
+        }
+    }
+}
+
+void qd_seq_step_rec(const qd_seq_t *s, int pat, int t, int step, qd_trec_t *r)
+{
+    qd_tcur_t c;
+    qd_rstep_t st;
+    const qd_pattern_t *P;
+    memset(r, 0, sizeof *r);
+    if (pat < 0 || pat >= QD_NPAT || t < 0 || t >= QD_PAT_NTRACK || step < 0 || step >= QD_NSTEP)
+        return;
+    P = qd_proj_pat(s->proj, pat);
+    memset(&c, 0, sizeof c);
+    c.pat = pat;
+    qd_step_resolve(P, t, step, &st);
+    fill_rec(s, r, t, step, &c, P, &st);
+}

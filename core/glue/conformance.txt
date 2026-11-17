@@ -1,0 +1,24 @@
+# FIZZ: FM1VST's tests/core_conformance.cpp (its header lists the directives)
+# the sound: FIZZ powers on to the idle screen, and in the step view (where any key or button goes) the keys are
+# the steps and play nothing; REC (P1.3b, PLAN §8b: REC switches the keybed between the sequencer and the keyboard)
+# makes the keybed a keyboard for the selected track (track 1, DRUMS: FM TONE's MARIMBA), through the voice pool,
+# ChoralRoot's effects and Output Clean. So the prelude taps REC: it wakes the unit and opens the keyboard; the default
+# key (D4) held 500 ms is then heard at once. The sequencer is stopped at power-on (A02 selected, PLAY starts it), so
+# the key is heard alone.
+sound btn REC 60
+# the flash (P1.5a): FIZZ keeps its LIBRARY, its eight projects (patterns, pool, track settings) and its settings in
+# the common NOR image (core-glue/common nor.h, FM1VST's <core-id>/flash.bin), written by themselves a moment after a
+# change (autosave, core/app/persist.c; no save gesture); flash_sync and shutdown write what still waits. The round
+# trip: HOME wakes the unit to the step view, W1 toggles step 1 of the pattern (an edit autosaves; the note key F3 by
+# "btn": "key F3" would be the computer key F3); the second unit boots from that image, which still differs from a
+# fresh unit's
+save wait 300
+save btn HOME
+save wait 200
+save btn F3 100
+save wait 1500
+save quit
+saved wait 1000
+saved quit
+# the reboot: nothing reboots or exits (no boot guard, no update mode)
+reboot none FIZZ has no reboot, update mode or exit path

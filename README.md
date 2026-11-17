@@ -4,8 +4,9 @@ The [EvilGenius](https://github.com/Quixotic7/evilgenius) SID chip groovebox (an
 Ableton Move as a standalone [Schwung](https://github.com/charlesvestal/schwung) tool. While it runs, Move's own
 software is stopped and EvilGenius owns the pads, the screen and the audio. Leaving it starts Move again.
 
-This repository holds only the Move side. The instrument itself is the EvilGenius core, compiled in from a checkout
-of that repository.
+This repository is the whole of it: the Move side (`src/`) and its own copy of the instrument's core (`core/`,
+`third_party/plutovg/`). The core was copied from the FM-1's EvilGenius (0.1.2) and is reshaped for the Move here (8
+tracks, 16 pages, clips); the FM-1's repository is neither needed nor touched.
 
 ## Status
 
@@ -19,13 +20,13 @@ pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it. Sta
 track's clips launched and stopped on their own, scenes) is in; `tests/session.txt` exercises it.
 
 A clip is a pattern's part of one track: slot k of a track is pattern A(k+1)'s part, so a pattern is a scene. The core
-plays each track's clip on its own (`QD_CLIPS`, on in the host profile the Move builds; the FM-1 leaves it out). The
+plays each track's clip on its own (`core/seq/seq.c`, `QD_CLIPS`). The
 sound stays with the track, as on Move: launching a clip, or editing one, carries the track's sound into it (the demo
 patterns' own sounds give way to the track's once they are played or edited).
 
-The Move builds the core with `-DQD_TRACKS=8 -DQD_NSTEP=256` (the FM-1 keeps 6 tracks and 8 pages). The projects store
-of other sizes is not read: **the first launch of this build on a unit erases the saved projects** (MY PRESETS are
-kept). The FM-1's JUMP condition reaches only the first 128 steps.
+The Move builds the core with `-DQD_TRACKS=8 -DQD_NSTEP=256`. A projects store of other sizes is not read: **the first
+launch of this build on a unit erases the saved projects** (MY PRESETS are kept). The JUMP condition reaches only the
+first 128 steps.
 
 Not done yet:
 
@@ -38,13 +39,14 @@ Not done yet:
 
 ```bash
 make test                    # the simulator on this machine, tests/smoke.txt into build/shots
+make core-test               # the core's own checks (core/tests/test_app.c) at the Move's sizes, sanitized
 make move                    # the Move binaries, in Docker
 make package                 # dist/evilgenius-module.tar.gz
 make clean && make package NO_SAM=1   # .. without SAM, the speech synthesizer that has no licence
 scripts/deploy.sh --launch   # copy to ableton@move.local and start it
 ```
 
-`EG` names the EvilGenius checkout (default `../evilgenius`).
+Nothing outside this repository is needed (the Move build mounts only it in Docker).
 
 ### Checking a unit with nobody at it
 

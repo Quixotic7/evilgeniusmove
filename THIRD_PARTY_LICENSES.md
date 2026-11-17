@@ -1,15 +1,16 @@
 # Third-party code
 
-EvilGenius for Move links the EvilGenius core (https://github.com/Quixotic7/evilgenius), which is MPL-2.0 and brings
-its own third-party parts. That repository's `LICENSING.md`, `LICENSES/` and `third_party/README.md` are the full
-account; in short:
+EvilGenius for Move carries its own copy of the EvilGenius core (`core/`, copied from
+https://github.com/Quixotic7/evilgenius, MPL-2.0), and the third-party parts that come with it. The licence texts are
+here: `LICENSE` (MPL-2.0), `LICENSES/BSD-2-Clause.txt` (the SID model), `third_party/plutovg/LICENSE` (MIT) and
+`third_party/plutovg/source/FTL.TXT`. In short:
 
 | Part | Licence | Where |
 |---|---|---|
 | EvilGenius core | MPL-2.0 | `core/` |
 | SID chip model (Joakim Eriksson) | BSD-2-Clause | `core/voice/sid/` |
 | plutovg (and its FreeType-derived rasterizer) | MIT, FTL | `third_party/plutovg/` |
-| SAM, the Software Automatic Mouth (Sebastian Macke's port) | **no licence**: see the core's `LICENSING.md` | `core/voice/sam/` |
+| SAM, the Software Automatic Mouth (Sebastian Macke's port, github.com/s-macke/SAM) | **no licence** (it has none of its own) | `core/voice/sam/` |
 
 This repository's own code:
 

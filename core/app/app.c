@@ -1,0 +1,1270 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+ * distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+/* QUADRILLE's app (app.h): the clock, the transport and the idle screen's dance, the sound (the sequencer and the keys
+ * into the tracks' FM TONE voices, the mix, ChoralRoot's effects), MIDI in. The panel's input, the frame and the LEDs
+ * are the controller's (ctl.h). Deterministic: time is the ticks' milliseconds and the audio's samples only. */
+#include <math.h>
+#include "../ui/fz_math.h"           /* (the drawing's own sinf / expf: the flash diet) */
+#include <stdio.h>
+#include <string.h>
+
+#include "app.h"
+#include "ui.h"
+#include "../seq/demo.h"
+#include "../voice/fx/qd_fx.h"
+#include "../voice/sam/say.h"            /* (EvilGenius: SAM's live words) */
+static void say_sync(qd_app_t *a);         /* (below) */
+#include "midi_map.h"
+
+static void mo_note(void *ctx, int t, int note, int vel, int live);
+static void mo_edit(void *ctx, int t, int id, int old, int value);
+static void mo_cc(qd_app_t *a, int t, int id, int old, int value);
+static int mo_mlk(void *ctx, int t, const qd_trec_t *r, int force);
+
+/* the tempo the sound runs at (FM TONE's synced LFOs and DELAYs, the synced delay) */
+void qd_app_tempo(qd_app_t *a, int bpm)
+{
+    a->bpm = bpm < QD_BPM_MIN ? QD_BPM_MIN : bpm > QD_BPM_MAX ? QD_BPM_MAX : bpm;
+    qd_model_tempo(&a->model, a->bpm);
+    qd_fx_tempo(a->bpm);
+}
+
+FZ_COLD void qd_app_init(qd_app_t *a)
+{
+    int t;
+    memset(a, 0, sizeof *a);
+    qd_side_clear(a);                                   /* (the Bluetooth unit's: outside qd_app_t) */
+    qd_say_reset();                                     /* (EvilGenius: SAM's words rendered afresh: a session is a
+                                                         * function of its input) */
+    a->master_pot = QD_MASTER_POT_DEFAULT;
+    qd_model_init(&a->model);
+    qd_pool_init(&a->pool, QD_VOICES);
+    for (t = 0; t < QD_NTRACK; t++)
+        qd_pool_set_track(&a->pool, t, a->model.t[t].limit, a->model.t[t].reserve);
+    qd_mix_init(&a->mix);
+    qd_fx_init();
+    qd_fx_master_pot(a->master_pot);
+    qd_project_init(&a->proj);
+    qd_persist_io(a);                                   /* P2.1: the patterns' backing (paged at the device's sizes) */
+    qd_demo_load(&a->proj);
+    qd_demo_model(&a->model);                           /* (the demo's own mix) */
+    qd_seq_init(&a->seq, &a->proj, &a->model);
+    qd_player_init(&a->player, &a->seq, &a->pool, &a->model);
+    a->player.out = mo_note, a->player.edit = mo_edit, a->player.out_ctx = a;   /* FIZZ MIDI (c): MIDI OUT */
+    a->player.mlk = mo_mlk;                             /* (e): the MIDI tracks' locks */
+    qd_seq_select(&a->seq, QD_PAT_START, 0);
+    a->snd_pat = -1;                                    /* (the first ms: the pattern's sounds into the tracks) */
+    qd_app_tempo(a, qd_seq_bpm(&a->seq));
+    qd_ctl_init(a);
+    qd_undo_init(a);                                    /* P1.5c */
+    a->metro_beat = -1;
+    a->metro_lvl = QD_METRO_LVL;
+}
+
+/* ---------------------------------------------------------------- the transport and the idle screen --- */
+static void qd_dance_play(qd_app_t *a)
+{
+    a->playing = 1;
+    a->beat = 0, a->beat_rem = 0;                    /* the transport starts at the top of the bar */
+}
+
+static void qd_dance_stop(qd_app_t *a)
+{
+    a->playing = 0;
+    a->beat = 0, a->beat_rem = 0;
+}
+
+void qd_app_play(qd_app_t *a)
+{
+    qd_seq_seed(&a->seq, 0x5155414452494C4Cull ^ (a->seed_fix ? a->seed_fix : a->ms));   /* (the rolls differ each
+                                                         * PLAY; a run is still determined by its input) */
+    qd_seq_play(&a->seq);
+    qd_dance_play(a);
+}
+
+void qd_app_stop(qd_app_t *a)
+{
+    qd_player_stop(&a->player);
+    qd_dance_stop(a);
+}
+
+/* ---------------------------------------------------------------- the keybed's notes --- */
+void qd_app_note_on(qd_app_t *a, int key, int note, int vel)
+{
+    a->edit_gen++;                                      /* (P2.6c: the patterns may change: persist.c looks) */
+    if (key < 0 || key >= QD_NKEY || note < 0 || note > 127)
+        return;
+    if ((a->keys_struck >> key) & 1u)                   /* (struck already: its note released first) */
+        qd_app_note_off(a, key);
+    a->key_note[key] = (uint8_t)note;
+    a->key_track[key] = (uint8_t)a->sel;
+    a->keys_struck |= 1u << key;
+    qd_player_key_on(&a->player, a->sel, note, vel);
+}
+
+void qd_app_note_off(qd_app_t *a, int key)
+{
+    a->edit_gen++;                                      /* (P2.6c: the patterns may change: persist.c looks) */
+    if (key < 0 || key >= QD_NKEY || !((a->keys_struck >> key) & 1u))
+        return;
+    a->keys_struck &= ~(1u << key);                     /* the note it struck (the octave or the track may have
+                                                         * changed since) */
+    qd_player_key_off(&a->player, a->key_track[key], a->key_note[key]);
+}
+
+/* 2026-10-26: the live keys' HOLD ends: every note a key struck and no key holds now released */
+void qd_app_hold_release(qd_app_t *a)
+{
+    int k;
+    for (k = 0; k < QD_NKEY; k++)
+        if (((a->keys_struck >> k) & 1u) && !((a->keys_held >> k) & 1u))
+            qd_app_note_off(a, k);
+}
+
+#if QD_PKG_BLE
+/* 2026-10-27, the Bluetooth package: SETTINGS' BLUETOOTH (app.h) */
+int qd_app_ble_on(const qd_app_t *a) { return !a->ui.ble_off; }
+void qd_app_ble_state(qd_app_t *a, int st) { a->ui.ble_st = (uint8_t)(st < 0 ? 0 : st > 2 ? 2 : st); }
+#endif
+#if QD_USB_HOST
+/* 2026-11-14: SETTINGS' USB HOST (app.h; never saved: qd_app_init's zeroed ui, OFF) */
+int qd_app_usb_host_on(const qd_app_t *a) { return a->ui.usbh_on; }
+void qd_app_usb_host_state(qd_app_t *a, int st) { a->ui.usbh_st = (uint8_t)(st < 0 ? 0 : st > 2 ? 2 : st); }
+#endif
+
+/* ---------------------------------------------------------------- input: the controller's --- */
+void qd_app_key(qd_app_t *a, int key, int down, int vel)
+{
+    a->edit_gen++;                                      /* (P2.6c: the patterns may change: persist.c looks) */
+    if (key < 0 || key >= QD_NKEY)
+        return;
+    if (down) {
+        a->keys_held |= 1u << key;
+        a->key_vel[key] = (uint8_t)(vel < 1 ? 1 : vel > 127 ? 127 : vel);
+    } else {
+        a->keys_held &= ~(1u << key);
+    }
+    qd_undo_input(a, 0);                                /* P1.5c: a gesture (its edits one undo level) */
+    qd_ctl_key(a, key, down, a->key_vel[key]);
+    if (!down && !(a->ui.khold && qd_keys_on(a)))
+        qd_app_note_off(a, key);                        /* whatever the controller did, a key's note ends with it
+                                                         * (2026-10-26: not under the live keys' HOLD) */
+    qd_ctl_preview_sync(a);                             /* P1.3d: the held steps sound, stopped */
+}
+
+void qd_app_button(qd_app_t *a, int button, int down)
+{
+    a->edit_gen++;                                      /* (P2.6c: the patterns may change: persist.c looks) */
+    if (button < 0 || button >= QD_NBTN)
+        return;
+    if (down)
+        a->buttons_held |= 1u << button;
+    else
+        a->buttons_held &= ~(1u << button);
+    qd_undo_input(a, 0);
+    qd_ctl_button(a, button, down);
+    qd_ctl_preview_sync(a);
+}
+
+void qd_app_input_prepare(qd_app_t *a) { qd_undo_input(a, 0); }
+
+/* FIZZ MIDI (c): a knob's turn (the panel's, the remote's) that moves the selected track's sound sends its CC (mo_edit,
+ * from qd_player_live_edit: the editor with nothing held, the mixer); RATIO B's pair and DRY / WET, which a turn moves
+ * in two writes or past the player, are looked at after it. Not the CCs that came in (qd_midi_cc_in), not a held step's
+ * locks, not a take's (AUTOMATION: the turn writes the steps' locks, the sound stays), not the p-locks playing */
+void qd_app_knob(qd_app_t *a, int knob, int detents)
+{
+    a->edit_gen++;                                      /* (P2.6c: the patterns may change: persist.c looks) */
+    if (detents && knob >= 0 && knob < QD_NKNOB) {
+        const int t = a->sel;
+        const qd_track_t *k = &a->model.t[t];
+        const int dry = k->mix.dry;                     /* (EvilGenius: no RATIO B pair in SID TONE: FIZZ's RB CC
+                                                         * echo is gone) */
+        qd_undo_input(a, 1);
+        a->mo_knob = (uint8_t)(t + 1), a->mo_rb = 0;
+        qd_ctl_knob(a, knob, detents);
+        a->mo_knob = 0;
+        if (k->mix.dry != dry && a->ui.cc_out)
+            mo_cc(a, t, QD_MM_DRY, dry, k->mix.dry);
+        say_sync(a);                                    /* (EvilGenius: a word just turned to speaks at once) */
+        qd_ctl_preview_sync(a);
+    }
+}
+
+void qd_app_show(qd_app_t *a, int mode, int view)
+{
+    if (mode < QD_MODE_IDLE || mode > QD_MODE_TRACKS)
+        return;
+    qd_latch_close(a);
+    qd_step_release_all(a);
+    a->ui.tk = QD_TK_NONE;
+    a->ui.cf_on = 0;
+    if (view >= 0 && view < QD_NVIEW)
+        qd_ctl_set_view(a, view);                       /* (2026-11-13: a Home view kept as HOME's) */
+    a->ui.touch_ms = a->ms;                             /* (as a touch: the idle clock from now) */
+    qd_ctl_set_mode(a, mode);
+}
+
+void qd_app_seed(qd_app_t *a, uint32_t seed) { a->seed_fix = seed; }
+
+void qd_app_master(qd_app_t *a, int pot)
+{
+    a->master_pot = pot < 0 ? 0 : pot > 1023 ? 1023 : pot;
+    qd_fx_master_pot(a->master_pot);
+}
+
+/* MIDI in (P1.6g): a channel plays the tracks set to it (the track settings' MIDI CH, the track's pattern's; 1..8 by
+ * default) and channel 15 the selected track too (FIZZ MIDI (a): was 16), notes and controllers (MW, BREATH, AT, PB: the
+ * tracks' modulation sources; the CCs of the map (midi_map.h) their sounds); on the selected track the notes also go into
+ * a held step or the recording (ctl_rec.c); all notes off / all sound off release the channel's tracks; the clock
+ * (0xF8), START (0xFA), CONTINUE (0xFB), STOP (0xFC) drive the transport. Channel 16 never plays a track: it is the
+ * remote's (research/FIZZ-MIDI-PLAN.md §3; a track's MIDI CH stored as 16 stays, and plays nothing) */
+static int midi_tracks(const qd_app_t *a, int ch)       /* the tracks channel ch plays (bit t) */
+{
+    int t, m = 0;
+    if (ch == QD_MIDI_REMOTE)
+        return 0;
+    for (t = 0; t < QD_NTRACK; t++)
+        if (qd_seq_track_pat(&a->seq, t)->trk[t].chan == ch)
+            m |= 1 << t;
+    if (ch == QD_MIDI_SEL)
+        m |= 1 << a->sel;
+    return m;
+}
+
+/* P2.4: in two parts. qd_app_midi_play, audio-safe (the clock and the transport, the notes to the player, the
+ * controllers; nothing of the UI: no undo, no recording, no preview), so the port can play a note from its interrupt
+ * at once; qd_app_midi_ui, the same message's UI side (a gesture's undo, the note into a held step or a take, the
+ * preview), from the main loop after it. qd_app_midi is the two in a row, as it always was. P2.4: the audio side reads
+ * nothing from the store (pattern.h nopage) */
+static void midi_play(qd_app_t *a, int status, int d1, int d2);
+void qd_app_midi_play(qd_app_t *a, int status, int d1, int d2)
+{
+    a->proj.nopage++;
+    midi_play(a, status, d1, d2);
+    a->proj.nopage--;
+}
+static void midi_play(qd_app_t *a, int status, int d1, int d2)
+{
+    const int ch = status & 15, kind = status & 0xF0;
+    int m, t;
+    switch (status & 0xFF) {
+    case 0xF8:
+        qd_seq_midi_clock(&a->seq);
+        return;
+    case 0xFA:
+        qd_seq_midi_start(&a->seq);
+        return;
+    case 0xFB:
+        qd_seq_midi_continue(&a->seq);
+        return;
+    case 0xFC:
+        qd_seq_midi_stop(&a->seq, qd_player_event, &a->player);
+        return;
+    default:
+        break;
+    }
+    if (status >= 0xF0 || ch == QD_MIDI_REMOTE)        /* (the remote's: the UI side's alone) */
+        return;
+    d1 &= 127;
+    d2 &= 127;
+    if (kind == 0x90 && d2) {                           /* a note: the channel's tracks now (its OFF goes to them) */
+        m = midi_tracks(a, ch);
+        if (a->midi_on[ch][d1])                         /* (struck again: the last one's released first) */
+            for (t = 0; t < QD_NTRACK; t++)
+                if ((a->midi_on[ch][d1] >> t) & 1)
+                    qd_player_key_off(&a->player, t, d1);
+        a->midi_on[ch][d1] = (uint8_t)m;
+    } else if (kind == 0x80 || kind == 0x90) {
+        m = a->midi_on[ch][d1];
+        a->midi_on[ch][d1] = 0;
+    } else {
+        m = midi_tracks(a, ch);
+    }
+    {   /* P1.3d: the notes going into a previewed held step sound through its preview, not as keys */
+        const int mine = (m >> a->sel) & 1, pv = mine && qd_ctl_previewing(a);
+        if (kind == 0x90 && d2) {
+            for (t = 0; t < QD_NTRACK; t++)
+                if (((m >> t) & 1) && !(pv && t == a->sel))
+                    qd_player_key_on(&a->player, t, d1, d2);
+        } else if (kind == 0x80 || kind == 0x90) {
+            for (t = 0; t < QD_NTRACK; t++)
+                if (((m >> t) & 1) && !(pv && t == a->sel))
+                    qd_player_key_off(&a->player, t, d1);
+        }
+    }
+    for (t = 0; t < QD_NTRACK; t++) {
+        qd_quad_owner_t *o = &a->model.t[t].owner;
+        if (!((m >> t) & 1))
+            continue;
+        if (kind == 0xB0 && (d1 == 120 || d1 == 123))
+            qd_player_flush_track(&a->player, t);       /* (P1.6c: its groups' notes too) */
+        else if (kind == 0xB0 && d1 == 1)               /* E4: the modulation slots' sources: MOD WHEEL, BREATH, */
+            o->mw = (uint8_t)d2;
+        else if (kind == 0xB0 && d1 == 2)
+            o->br = (uint8_t)d2;
+        else if (kind == 0xD0)                          /* .. channel pressure, pitch bend */
+            o->at = (uint8_t)d1;
+        else if (kind == 0xE0)
+            o->pb = (int16_t)((d2 << 7 | d1) - 8192);
+    }
+    if (kind == 0xB0 && (d1 == 120 || d1 == 123))
+        memset(a->midi_on[ch], 0, sizeof a->midi_on[ch]);
+}
+
+void qd_app_midi_ui(qd_app_t *a, int status, int d1, int d2)
+{
+    const int ch = status & 15, kind = status & 0xF0;
+    int mine;
+    a->edit_gen++;                                      /* (P2.6c) */
+    if (status >= 0xF0)
+        return;
+    if (ch == QD_MIDI_REMOTE) {                         /* FIZZ MIDI (b): the remote, the panel's input (each call its
+                                                         * own gesture, as the panel's) */
+        qd_midi_remote(a, kind, d1 & 127, d2 & 127);
+        return;
+    }
+    d1 &= 127;
+    d2 &= 127;
+    qd_undo_input(a, kind == 0xB0 && qd_midi_cc_id(d1) >= 0);   /* (P1.5c: notes into a held step or a take: a gesture;
+                                                         * FIZZ MIDI (a): a mapped CC as a knob's detent) */
+    if (kind == 0x90 && d2) {                           /* (the selected track's: kept with the note, for its OFF) */
+        mine = (midi_tracks(a, ch) >> a->sel) & 1;
+        if (mine)
+            a->midi_sel[ch][d1 >> 3] |= (uint8_t)(1u << (d1 & 7));
+        else
+            a->midi_sel[ch][d1 >> 3] &= (uint8_t)~(1u << (d1 & 7));
+        if (mine)
+            qd_rec_midi_note(a, d1, 1, d2);
+    } else if (kind == 0x80 || kind == 0x90) {
+        mine = (a->midi_sel[ch][d1 >> 3] >> (d1 & 7)) & 1;
+        a->midi_sel[ch][d1 >> 3] &= (uint8_t)~(1u << (d1 & 7));
+        if (mine)
+            qd_rec_midi_note(a, d1, 0, 0);
+    } else {
+        const int m = midi_tracks(a, ch);
+        mine = (m >> a->sel) & 1;
+        if (kind == 0xB0 && (d1 == 120 || d1 == 123))
+            memset(a->midi_sel[ch], 0, sizeof a->midi_sel[ch]);
+        else if (kind == 0xB0)                          /* FIZZ MIDI (a): the CC map, the tracks' sounds (here, never in
+                                                         * the audio side) */
+            qd_midi_cc_in(a, m, d1, d2);
+    }
+    if (mine)
+        qd_ctl_preview_sync(a);
+}
+
+void qd_app_midi(qd_app_t *a, int status, int d1, int d2)
+{
+    qd_app_midi_play(a, status, d1, d2);                /* (the player changes no pattern: the gesture's undo after it
+                                                         * keeps what it kept before it) */
+    qd_app_midi_ui(a, status, d1, d2);
+}
+
+/* ---------------------------------------------------------------- FIZZ MIDI (c): MIDI out --- */
+/* research/FIZZ-MIDI-PLAN.md §4 (app.h mo_*): a track's notes on its MIDI OUT channel (the player's out: as the pool
+ * gets them), each ON kept until its OFF went (mo_on: the channel it went on), so a stop, a mute, a flush, a channel
+ * changed or OFF end them; the clock and the transport while FIZZ runs on its own clock (SETTINGS' CLOCK OUT); the knobs'
+ * moves as CCs on the track's MIDI CH (SETTINGS' CC OUT) */
+static int mo_put(qd_app_t *a, int status, int d1, int d2, int keep)   /* queued, room for keep more after it; 0 none */
+{
+    if (QD_MO_Q - (uint8_t)(a->mo_w - a->mo_r) < 1 + keep)
+        return 0;
+    a->mo_q[a->mo_w++ % QD_MO_Q] = (uint32_t)(status >= 0xF0 ? 0x0F : status >> 4) | (uint32_t)status << 8 |
+                                   (uint32_t)d1 << 16 | (uint32_t)d2 << 24;
+    return 1;
+}
+static int mo_chan(const qd_app_t *a, int t)           /* 0 OFF, 1..16 */
+{
+    return qd_seq_track_pat(&a->seq, t)->trk[t].mout & QD_MOUT_CH;
+}
+static int mo_fm(const qd_app_t *a, int t) { return qd_seq_track_pat(&a->seq, t)->trk[t].mout & QD_MOUT_FM; }
+static void mo_drop(qd_app_t *a, int i)                 /* note i owed: its OFF (there is always room), forgotten */
+{
+    const unsigned e = a->mo_on[i];
+    mo_put(a, 0x80 | (int)(e >> 7 & 15u), (int)(e & 127u), 0, 0);
+    a->mo_on[i] = a->mo_on[--a->mo_n];
+}
+/* FIZZ MIDI (e): the MIDI track's slots (quad_voice.h QD_MSND_*): slot k of sound p at value v, its CC on the track's
+ * MIDI OUT */
+static void mo_slot(qd_app_t *a, int t, const int16_t *p, int k, int v)
+{
+    const int ch = mo_chan(a, t);
+    if (ch)
+        mo_put(a, 0xB0 | (ch - 1), p[QD_MSND_CC(k)] & 127, v < 0 ? 0 : v > 127 ? 127 : v, a->mo_n);
+}
+void qd_app_msnd_send(qd_app_t *a, int t, int k, int v, int lock)
+{
+    const int16_t *p = a->model.t[t].patch;
+    if (t < 0 || t >= QD_NTRACK || k < 0 || k >= QD_MSND_N || !qd_msnd_is(p))
+        return;
+    if (lock)
+        a->mo_lk[t] |= 1u << k;
+    else if (!(p[QD_MSND_CC(k)] & QD_MSND_TOUCHED))
+        return;
+    mo_slot(a, t, p, k, v);
+}
+/* 2026-11-10, FM+MIDI (pattern.h QD_MOUT_FM): an FM TONE track whose sound editor's values go out as the CC map's
+ * (midi_map.c) on its MIDI OUT channel: a hand's turn at once (mo_cc, in CC OUT's place), REC + AUTOMATION's turn at
+ * once (qd_app_fm_auto), a step's locks as it plays (mo_flk, as a MIDI track's). The side's fid / fv (app.h qd_side_t):
+ * the values whose CC went out as a lock's, so a lock again at the same value sends nothing and the next trig, a stop
+ * or a mute sends the track's own back. Value id of sound p as its CC's value, -1 none (RATIO B: the pair, on RB1) */
+static int mo_fcc(int id) { return id == QD_QP_RB2 || id >= QD_QUAD_NP ? -1 : qd_midi_id_cc(id); }
+static int mo_fcv(int id, const int16_t *p)
+{
+    if (mo_fcc(id) < 0)
+        return -1;
+    return qd_midi_value_cc(id, id == QD_QP_RB1 ? p[QD_QP_RB1] * 19 + p[QD_QP_RB2] : p[id]);
+}
+static void mo_fput(qd_app_t *a, int t, int id, int v)   /* (room kept for the trig's notes after it) */
+{
+    const int ch = mo_chan(a, t);
+    if (ch)
+        mo_put(a, 0xB0 | (ch - 1), qd_midi_id_cc(id), v, a->mo_n + QD_MO_FROOM);
+}
+/* the values sound p locks (lkm; 0: none, a stop) out where the synth has another, those no longer locked back at p's
+ * (the track's own) */
+static __attribute__((noinline)) void mo_flk(qd_app_t *a, int t, const int16_t *p, const uint32_t *lkm)
+{
+    qd_side_t *m = &QD_SIDE_M(a)[t];
+    uint8_t id2[QD_MO_FL], v2[QD_MO_FL];
+    int id, n = 0, i, v;
+    for (id = 0; id < QD_QUAD_NP; id++) {
+        const int lk = lkm && (((lkm[id >> 5] >> (id & 31)) & 1u) ||
+                               (id == QD_QP_RB1 && ((lkm[QD_QP_RB2 >> 5] >> (QD_QP_RB2 & 31)) & 1u)));
+        for (i = 0; i < m->fn && m->fid[i] != id; i++)
+            ;
+        if ((!lk && i == m->fn) || (v = mo_fcv(id, p)) < 0)
+            continue;
+        if (i == m->fn || m->fv[i] != v)
+            mo_fput(a, t, id, v);
+        if (lk && n < QD_MO_FL)
+            id2[n] = (uint8_t)id, v2[n++] = (uint8_t)v;
+    }
+    memcpy(m->fid, id2, (size_t)n);
+    memcpy(m->fv, v2, (size_t)n);
+    m->fn = (uint8_t)n;
+}
+void qd_app_fm_auto(qd_app_t *a, int t, int id, int v)   /* (ctl_rec.c qd_auto_put: a take's value, heard now; RATIO B
+                                                         * at its steps only) */
+{
+    qd_side_t *m = &QD_SIDE_M(a)[t];
+    int i;
+    if (a->mo_knob != t + 1 || !mo_fm(a, t) || id == QD_QP_RB1 || mo_fcc(id) < 0)
+        return;
+    v = qd_midi_value_cc(id, v);
+    for (i = 0; i < m->fn && m->fid[i] != id; i++)
+        ;
+    if (i == m->fn && i < QD_MO_FL)
+        m->fn++, m->fid[i] = (uint8_t)id, m->fv[i] = 0xFF;
+    if (i == QD_MO_FL || m->fv[i] != v)
+        mo_fput(a, t, id, v);
+    if (i < QD_MO_FL)
+        m->fv[i] = (uint8_t)v;
+}
+/* a MIDI sound's trig (the player's mlk): the slots it locks out as CCs, then the slots the trig before locked and this
+ * one does not back at the sound's own values (the untouched: nothing). A chord's next note (the same trig): nothing,
+ * unless force (the preview). The trig is ON's time: the values go out before its notes; the track's own value comes
+ * back at the next trig (or a stop, a mute: mo_lk_back). An FM+MIDI track's: mo_flk; any other: nothing (0) */
+static int mo_mlk(void *ctx, int t, const qd_trec_t *r, int force)
+{
+    qd_app_t *a = (qd_app_t *)ctx;
+    const uint32_t key = (uint32_t)(uintptr_t)r ^ (uint32_t)r->step << 20 ^ (uint32_t)r->pat << 26 ^ 1u;
+    uint32_t lk = 0, back;
+    int k;
+    if (t < 0 || t >= QD_NTRACK || (!force && key == a->mo_lkey[t]) || !(qd_msnd_is(r->patch) || mo_fm(a, t)))
+        return 0;
+    a->mo_lkey[t] = key;
+    if (!qd_msnd_is(r->patch)) {                        /* (FM+MIDI) */
+        mo_flk(a, t, r->patch, r->lkm);
+        return 1;
+    }
+    for (k = 0; k < QD_MSND_N; k++) {
+        const int id = QD_MSND_ID[k];
+        if ((r->lkm[id >> 5] >> (id & 31)) & 1u) {
+            lk |= 1u << k;
+            mo_slot(a, t, r->patch, k, r->patch[id]);
+        }
+    }
+    back = a->mo_lk[t] & ~lk;
+    for (k = 0; back && k < QD_MSND_N; k++)
+        if (((back >> k) & 1u) && (r->patch[QD_MSND_CC(k)] & QD_MSND_TOUCHED))
+            mo_slot(a, t, r->patch, k, r->patch[QD_MSND_ID[k]]);
+    a->mo_lk[t] = lk;
+    return 1;
+}
+static void mo_lk_back(qd_app_t *a, int t)              /* (a stop, a mute, a flush) the locked slots back */
+{
+    const int16_t *p = a->model.t[t].patch;
+    int k;
+    if (qd_msnd_is(p)) {
+        for (k = 0; a->mo_lk[t] && k < QD_MSND_N; k++)
+            if (((a->mo_lk[t] >> k) & 1u) && (p[QD_MSND_CC(k)] & QD_MSND_TOUCHED))
+                mo_slot(a, t, p, k, p[QD_MSND_ID[k]]);
+    } else {                                            /* (FM+MIDI's: the locks sent, back) */
+        mo_flk(a, t, p, 0);
+    }
+    a->mo_lk[t] = a->mo_lkey[t] = 0;
+}
+static void mo_note(void *ctx, int t, int note, int vel, int live)   /* (the player's out: player.h) */
+{
+    qd_app_t *a = (qd_app_t *)ctx;
+    int i;
+    if (note < 0) {                                     /* track t's notes: every one (live -1), the sequencer's (0) */
+        if (t >= 0 && t < QD_NTRACK && (a->mo_lk[t] || a->mo_lkey[t]))
+            mo_lk_back(a, t);                           /* (FIZZ MIDI (e)) */
+        for (i = a->mo_n - 1; i >= 0; i--)
+            if ((a->mo_on[i] >> 11 & 7u) == (unsigned)t && (live < 0 || !(a->mo_on[i] & 0x8000u)))
+                mo_drop(a, i);
+        return;
+    }
+    note &= 127;
+    for (i = 0; i < a->mo_n; i++)                       /* its OFF, or struck again: the one before ends */
+        if ((a->mo_on[i] & 127u) == (unsigned)note && (a->mo_on[i] >> 11 & 7u) == (unsigned)t) {
+            mo_drop(a, i);
+            break;
+        }
+    if (vel > 0) {
+        const int ch = mo_chan(a, t);
+        if (ch && a->mo_n < QD_MO_NOTES && mo_put(a, 0x90 | (ch - 1), note, vel > 127 ? 127 : vel, a->mo_n + 1))
+            a->mo_on[a->mo_n++] = (uint16_t)(note | (ch - 1) << 7 | t << 11 | (live > 0 ? 0x8000 : 0));
+    }
+}
+static void mo_check(qd_app_t *a)                       /* (a locked ms) a note on a channel no longer its track's: OFF */
+{
+    int i;
+    for (i = a->mo_n - 1; i >= 0; i--)
+        if (mo_chan(a, a->mo_on[i] >> 11 & 7u) != (int)(a->mo_on[i] >> 7 & 15u) + 1)
+            mo_drop(a, i);
+}
+void qd_app_midi_out_panic(qd_app_t *a)
+{
+    while (a->mo_n)
+        mo_drop(a, a->mo_n - 1);
+}
+static void mo_cc(qd_app_t *a, int t, int id, int old, int value)   /* value id's CC on track t's MIDI CH, if it moved */
+{
+    const int ch = qd_seq_track_pat(&a->seq, t)->trk[t].chan, cc = qd_midi_id_cc(id), v = qd_midi_value_cc(id, value);
+    if (qd_msnd_is(a->model.t[t].patch) || cc < 0 || v == qd_midi_value_cc(id, old))   /* (FIZZ MIDI (e): a MIDI track
+                                                         * sends its slots' CCs, never the map's) */
+        return;
+    if (mo_fm(a, t) && id < QD_QUAD_NP) {               /* FM+MIDI: on MIDI OUT's channel, not CC OUT's too; the
+                                                         * synth now has the track's own */
+        qd_side_t *m = &QD_SIDE_M(a)[t];
+        int i;
+        for (i = 0; i < m->fn; i++)
+            if (m->fid[i] == id)
+                m->fv[i] = (uint8_t)v;
+        mo_fput(a, t, id, v);
+    } else if (a->ui.cc_out && ch < QD_MIDI_REMOTE) {
+        mo_put(a, 0xB0 | ch, cc, v, a->mo_n);
+    }
+}
+static void mo_edit(void *ctx, int t, int id, int old, int value)   /* (the player's edit: player.h) */
+{
+    qd_app_t *a = (qd_app_t *)ctx;
+    if (a->mo_knob != t + 1)                            /* (a knob's turn only: qd_app_knob) */
+        return;
+    if (id == QD_QP_RB1 || id == QD_QP_RB2)
+        a->mo_rb = 1;                                   /* (the pair: after the turn) */
+    else
+        mo_cc(a, t, id, old, value);
+}
+/* the transport and the clock, before each block's sequencer: START when FIZZ starts playing on its own clock (CLOCK
+ * OUT on), a pulse at every 24th of a beat the transport reached (the first on its 0, after START), STOP when it stops,
+ * follows an outside clock or CLOCK OUT goes off; START again when it restarts from the top. FIZZ has no pause: no
+ * CONTINUE. Its stop: the sequencer's notes still owed end (MIDI STOP's and the clock lost's too) */
+static __attribute__((noinline)) void mo_clock(qd_app_t *a)   /* (out of line: qd_app_block_begin is RAM
+                                                         * code on the unit, firmware/build.py HOT; this stays in the flash) */
+{
+    const qd_seq_t *s = &a->seq;
+    const int own = s->playing && !s->ext;
+    if (s->playing)
+        a->mo_run |= 2u;
+    else if (a->mo_run & 2u) {
+        int t;
+        a->mo_run &= (uint8_t)~2u;
+        for (t = 0; t < QD_PAT_NTRACK; t++)
+            mo_note(a, t, -1, 0, 0);
+    }
+    if (!own)
+        a->mo_run &= (uint8_t)~4u;
+    else if (!(a->mo_run & 4u)) {                       /* (it starts playing: its START) */
+        a->mo_run |= 4u;
+        if (a->ui.clk_out && mo_put(a, 0xFA, 0, 0, a->mo_n))
+            a->mo_run |= 1u, a->mo_pulse = 0;
+    }
+    if (!(a->mo_run & 1u))
+        return;
+    if (!own || !a->ui.clk_out) {
+        mo_put(a, 0xFC, 0, 0, a->mo_n);                 /* (none: the receiver's clock stops all the same) */
+        a->mo_run &= (uint8_t)~1u;
+        return;
+    }
+    if (s->tick + QD_CLOCK_TICKS < (int64_t)a->mo_pulse * QD_CLOCK_TICKS && mo_put(a, 0xFA, 0, 0, a->mo_n))
+        a->mo_pulse = 0;                                /* (from the top again) */
+    while ((int64_t)a->mo_pulse * QD_CLOCK_TICKS <= s->tick) {
+        mo_put(a, 0xF8, 0, 0, a->mo_n);                 /* (no room: that pulse is lost, none sent late) */
+        a->mo_pulse++;
+    }
+}
+/* (c2) a new USB connection: what waits in the queue was made for no one (nobody took it: plat_midi_out_room 0) and
+ * goes. A NOTE ON dropped never went out: its OFF is no longer owed (the newest entry of its channel and note
+ * forgotten); a note whose ON went out stays owed (its OFF goes on the new connection, at its time) */
+void qd_app_midi_out_drop(qd_app_t *a)
+{
+    while (a->mo_r != a->mo_w) {
+        const uint32_t p = a->mo_q[a->mo_r++ % QD_MO_Q];
+        if ((p & 15u) == 9u && (p >> 24)) {
+            const unsigned key = (unsigned)(p >> 16 & 127u) | (unsigned)(p >> 8 & 15u) << 7;
+            int i;
+            for (i = a->mo_n - 1; i >= 0; i--)
+                if ((a->mo_on[i] & 0x7FFu) == key) {
+                    a->mo_on[i] = a->mo_on[--a->mo_n];
+                    break;
+                }
+        }
+    }
+}
+int qd_app_midi_out_take(qd_app_t *a, uint32_t *pkt, uint32_t room)
+{
+    uint32_t p;
+    if (a->mo_r == a->mo_w || !room)
+        return 0;
+    p = a->mo_q[a->mo_r % QD_MO_Q];
+    if ((p & 15u) == 9u && (p >> 24) && room <= a->mo_n)   /* (a NOTE ON: room for it and every OFF owed) */
+        return 0;
+    a->mo_r++;
+    *pkt = p;
+    return 1;
+}
+
+/* ---------------------------------------------------------------- time --- */
+/* P1.5a: the tracks' sounds are the edited pattern's (pattern.h qd_tsound_t): a pattern change brings its sounds into
+ * the model's tracks (what the controller edits and the keys play); an edit of a track's sound goes back into it */
+static void qd_app_sounds(qd_app_t *a)
+{
+    qd_pattern_t *P;
+    int t;
+    P = qd_proj_pat(&a->proj, a->seq.cur);
+    if (a->snd_pat != a->seq.cur) {
+        a->snd_pat = a->seq.cur;
+        for (t = 0; t < QD_NTRACK; t++)
+            qd_track_from_tsound(&a->model.t[t], &P->snd[t]);
+        qd_br_sync(a);                                  /* (P1.5t: browsing: the preview again over the new one) */
+        return;
+    }
+    for (t = 0; t < QD_NTRACK; t++) {
+        if (a->ui.latch == QD_LATCH_BROWSE && t == a->ui.br.t)
+            continue;                                   /* (P1.5t: the browser's preview is not the pattern's) */
+        if (qd_msnd_take(a, t))                         /* (2026-11-10: a load of the other engine's: ENGINE's side) */
+            a->edit_gen++;
+    }
+}
+
+/* P2.6c: a millisecond in three parts. ms_lock1 and ms_lock2 touch what the audio side reads (the patterns' slots and
+ * the sound cache, the patterns' track sounds, the transport, the voices through the controller and the preview): the
+ * audio lock. ms_free touches what only the main loop uses (the persist looks: hashes of what is in RAM, never reading
+ * anything in; the store's job queue; SysEx's labels): no lock */
+/* 2026-10-27: the locked millisecond's parts timed (the stats' lkp_*: the port sets the clock, 24-bit ticks) */
+uint32_t qd_lkp_max[6];
+uint32_t (*qd_lkp_clock)(void);
+#define LKP_T0 uint32_t lk_t = qd_lkp_clock ? qd_lkp_clock() : 0u
+#define LKP(i)                                                                                                   \
+    do {                                                                                                         \
+        if (qd_lkp_clock) {                                                                                      \
+            const uint32_t lk_n = qd_lkp_clock(), lk_d = (lk_n - lk_t) & 0xFFFFFFu;                              \
+            if (lk_d > qd_lkp_max[i])                                                                            \
+                qd_lkp_max[i] = lk_d;                                                                            \
+            lk_t = lk_n;                                                                                         \
+        }                                                                                                        \
+    } while (0)
+static void ms_lock1(qd_app_t *a)
+{
+    LKP_T0;
+    qd_persist_prefetch(a);                             /* P2.1: the sequencer's patterns in RAM before it asks */
+    LKP(0);
+    if (a->ui.pat_wait >= 0 && (a->seq.playing || qd_proj_resident(&a->proj, a->ui.pat_wait))) {
+        const int p = a->ui.pat_wait;                   /* (2026-10-26: the pattern chosen while stopped: in RAM now) */
+        a->ui.pat_wait = -1;
+        qd_seq_select_at(&a->seq, p, a->proj.launch);
+        if (!a->seq.playing)
+            qd_app_tempo(a, qd_seq_bpm(&a->seq));
+    }
+    qd_pc_ms(a);                                        /* (2026-11-13: PATTERNS' copy / cut / paste, its pattern in) */
+    LKP(1);
+    qd_app_sounds(a);
+    LKP(2);
+}
+static void ms_free(qd_app_t *a)
+{
+    qd_proj_fetch_work(&a->proj);                       /* 2026-10-26: a pattern read in outside the lock (the pop) */
+    qd_persist_snd_work(a);                             /* .. and a pool sound the next steps lock */
+    qd_persist_ms(a);                                   /* P1.5a: written by itself */
+    qd_sx_ms(a);                                        /* P1.6l: a subscribed page's LABELS, when they change */
+}
+static void ms_lock2(qd_app_t *a)
+{
+    LKP_T0;
+    if (a->ui.rec)
+        a->edit_gen++;                                  /* (P2.6c: a take writes as time goes) */
+    if (a->seq.playing != a->playing) {                 /* (MIDI START / STOP moved the transport) */
+        if (a->seq.playing)
+            qd_dance_play(a);
+        else
+            qd_dance_stop(a);
+    }
+    if (a->playing) {                                   /* the transport's own position, in beats (floor) */
+        int32_t r;
+        a->beat = qd_divmod64(qd_seq_tick(&a->seq), QD_BEAT_TICKS, &r);
+        if (r < 0)
+            a->beat--, r += QD_BEAT_TICKS;
+        a->beat_rem = r;
+    }
+    qd_player_pattern_ms(&a->player);                   /* (2026-10-26: a pattern change: the MIDI FX's notes end) */
+    mo_check(a);                                        /* (FIZZ MIDI (c): a MIDI OUT changed: its notes end) */
+    qd_ctl_ms(a);
+    LKP(3);
+    qd_ctl_preview_sync(a);                             /* (a step held at 250 ms, the transport moved) */
+    LKP(4);
+}
+/* P2.10: a gesture closes when quiet (a take: as one). Its level is the pattern's (and the MIDI FX's, the slots')
+ * difference from the gesture's before: it reads the model and writes only the undo log, which the audio side never
+ * reads, so no lock (on the unit ~2.5 ms: the pattern unpacked and compared twice). After ms_lock2, as it was */
+/* EvilGenius: the words SAM must have rendered before a voice speaks them (say.h): each track's sound's, and each step
+ * of the playing pattern that locks its word or its voice. At most one render a look (SAM's few ms in the free time,
+ * never the audio's); a look every 16 ms */
+static int say_step(qd_app_t *a, const qd_pattern_t *P, int t, int step, const int16_t *tp, int render)
+{
+    static const int ID[6] = {QD_QP_SAY, QD_QP_WORD, QD_QP_SSPD, QD_QP_SPIT, QD_QP_STHR, QD_QP_SMTH};
+    int16_t pp[QD_QUAD_NP];
+    int k;
+    (void)a;
+    memcpy(pp, tp, sizeof pp);
+    for (k = 0; k < 6; k++) {
+        int16_t v;
+        if (qd_lock_get(P, t, step, ID[k], &v))
+            pp[ID[k]] = v;
+    }
+    return render ? qd_say_want(pp) : (qd_say_touch(pp), 0);
+}
+/* twice over the words wanted: first every one already rendered is marked wanted (none of them gives way in this
+ * look), then the first one missing is rendered */
+static void say_sync(qd_app_t *a)
+{
+    const qd_pattern_t *P = qd_proj_pat(&a->proj, a->seq.cur);
+    int t, k, render;
+    qd_say_pass();
+    for (render = 0; render < 2; render++)
+        for (t = 0; t < QD_NTRACK; t++) {
+            const int16_t *tp = a->model.t[t].patch;
+            if (qd_msnd_is(tp))
+                continue;
+            if (render ? qd_say_want(tp) : (qd_say_touch(tp), 0))
+                return;
+            for (k = 0; P && k < P->lock_n[t]; k++) {
+                const qd_lock_t *l = &P->lock[P->lock_start[t] + k];
+                if ((l->id == QD_QP_SAY || l->id == QD_QP_WORD || (l->id >= QD_QP_SSPD && l->id <= QD_QP_SMTH)) &&
+                    say_step(a, P, t, l->step, tp, render))
+                    return;
+            }
+        }
+}
+
+void qd_app_announce(qd_app_t *a, const char *text, int voice, int sfx)
+{
+    if (a->ui.voice_mode == QD_VOICE_OFF || !a->ui.voice_lvl ||
+        (a->ui.voice_mode == QD_VOICE_STOPPED && a->seq.playing))
+        return;                                         /* (off, or STOPPED: never over a pattern playing) */
+    if (text && text[0]) {
+        a->ann_text = text;
+        a->ann_voice = (uint8_t)voice;
+    }
+    if (sfx) {
+        a->sfx_left = 0;                                /* (the audio reads sfx_left: the kind and place first) */
+        a->sfx = (uint8_t)sfx;
+        a->sfx_ph = 0;
+        a->sfx_lfsr = 0x1D872B41u;
+        a->sfx_left = sfx == QD_SFX_ZAP ? QD_FS * 3 / 10 : sfx == QD_SFX_BEEPS ? QD_FS / 5 : QD_FS / 4;
+    }
+}
+
+static void ms_free2(qd_app_t *a)
+{
+    if (a->ann_text) {                                  /* EvilGenius, THE VOICE: SAM speaks the waiting line */
+        const char *t = a->ann_text;
+        a->ann_text = 0;
+        qd_ann_say(t, a->ann_voice, a->ui.voice_lvl * 100 / QD_VOICE_LVL_MAX);
+        return;
+    }
+    if (a->ui.voice_mode == QD_VOICE_STOPPED && a->seq.playing && (qd_ann_busy() || a->sfx_left)) {
+        qd_ann_stop();                                  /* (PLAY while he speaks: he stops) */
+        a->sfx_left = 0;
+    }
+    if (!a->ann_greeted && a->ui.mode != QD_MODE_IDLE) {   /* (the first key of a power-on: his welcome) */
+        a->ann_greeted = 1;
+        qd_app_announce(a, "INTRUDER ALERT", QD_ANN_VILLAIN, QD_SFX_NONE);
+    }
+    if (!(a->ui.rec && a->seq.playing))
+        qd_undo_ms(a);
+    if (a->ms - a->say_ms >= 16u) {
+        a->say_ms = a->ms;
+        say_sync(a);
+    }
+}
+static void qd_app_ms(qd_app_t *a)     /* one device millisecond */
+{
+    ms_lock1(a);
+    ms_free(a);
+    ms_lock2(a);
+    ms_free2(a);
+}
+
+/* P2.6c: the port's two halves of qd_app_tick: the locked part once up to ms now (coalesced: its timers compare
+ * times), then (the lock released) the free part a ms at a time for the same ms, each with a->ms as it was then (the
+ * persist looks' schedule is by the ms) */
+/* 2026-10-26, CHAIN: each effect's share of the wet made before it: the tracks' sends, weighted by their level into
+ * the chain (computed here at the control rate, on flash: the audio path's RAM code is full) */
+static void chain_shares(qd_app_t *a)
+{
+    const int chain = qd_fx_get(QD_FXP_RMODE);
+    int32_t g[3] = {0, 0, 0}, wsum = 0;
+    int i, k;
+    for (i = 0; i < QD_NTRACK; i++) {                   /* each track's gains (mix.h g_lvl, g_send): its DRY / WET */
+        qd_mix_track_t *mt = &a->model.t[i].mix;
+        const int32_t td = mt->dry;
+        if (!chain) {                                   /* PARALLEL: the middle both full (bit for bit as before) */
+            const int32_t gd = td >= 64 ? 4096 : td << 6, gw = td <= 64 ? 4096 : (127 - td) * 65;
+            mt->g_lvl = gd;
+            mt->g_send[0] = mt->g_send[1] = mt->g_send[2] = gw;
+        } else {                                        /* CHAIN: of what the track feeds the chain, send k's share
+                                                         * into effect k in the order, the rest on; the remainder dry */
+            const int32_t send[3] = {mt->chorus, mt->delay, mt->reverb}, feed = 127 - td;
+            int32_t r = 4096;
+            for (k = 0; k < 4; k++) {
+                const int b = qd_fx_route_block(k);
+                if (b < 0 || b > 2)
+                    continue;
+                mt->g_send[b] = feed * r / 127;
+                r = r * (127 - send[b]) / 127;
+            }
+            mt->g_lvl = (td * 4096 + feed * r) / 127;
+        }
+        {   /* EvilGenius: the rooms: each send's gain; what goes through a room leaves the dry mix (the most of
+             * the five: at 127 the track is heard only through its rooms) */
+            int mx = 0;
+            for (k = 0; k < QD_NROOM; k++) {
+                mt->g_room[k] = (int16_t)(mt->room[k] * 4096 / 127 >> (a->ui.boost ? 0 : 1));
+                mx = mt->room[k] > mx ? mt->room[k] : mx;
+            }
+            mt->g_lvl0 = mt->g_lvl >> (a->ui.boost ? 0 : 1);   /* (as g_lvl below, before the rooms' part) */
+            mt->room_sh = a->ui.boost ? 0 : 1;
+            mt->g_lvl = mt->g_lvl * (127 - mx) / 127;
+        }
+        if (!a->ui.boost) {                             /* 2026-10-26 (the owner: the engine clipped inside): 6 dB
+                                                         * under the old level, dry and sends alike; SETTINGS' BOOST
+                                                         * brings it back */
+            mt->g_lvl >>= 1;
+            mt->g_send[0] >>= 1, mt->g_send[1] >>= 1, mt->g_send[2] >>= 1;
+        }
+        if (chain) {
+            const int32_t w = (int32_t)mt->level * (127 - td);
+            g[0] += w * mt->chorus, g[1] += w * mt->delay, g[2] += w * mt->reverb;
+            wsum += w;
+        }
+    }
+    if (chain) {
+        for (k = 0; k < 3; k++)                         /* (32-bit: g / 127 <= wsum <= 96774, then << 12) */
+            g[k] = wsum ? ((g[k] / 127) << 12) / wsum : 0;
+        qd_fx_chain_g(g);
+    }
+}
+
+void qd_app_tick_locked(qd_app_t *a, uint32_t ms)
+{
+    uint32_t n;
+    LKP_T0;
+    chain_shares(a);
+    LKP(5);
+    if (!a->started || ms < a->ms) {
+        a->started = 1;
+        a->ms = a->free_ms = ms;
+        a->ui.touch_ms = ms;
+        return;
+    }
+    n = ms - a->ms;
+    if (n > 60000u)
+        n = 60000u;
+    a->ms = ms - n;
+    if (a->free_ms < a->ms)
+        a->free_ms = a->ms;
+    if (n) {                                            /* (P2.6c: once for every ms since: its timers compare times,
+                                                         * none counts calls; a timer fires up to n ms late) */
+        a->ms = ms;
+        ms_lock1(a);
+        ms_lock2(a);
+    }
+    a->ms = ms;
+}
+#define QD_FREE_CATCHUP_MS 64u
+void qd_app_tick_free(qd_app_t *a)
+{
+    const uint32_t ms = a->ms;
+    if (ms - a->free_ms > QD_FREE_CATCHUP_MS)           /* (P2.6f: a stalled main loop catches up a bounded slice: the
+                                                         * persist looks and the labels' timers compare times, they
+                                                         * lose nothing but a delay) */
+        a->free_ms = ms - QD_FREE_CATCHUP_MS;
+    while (a->free_ms != ms) {
+        a->ms = ++a->free_ms;
+        ms_free(a);
+    }
+    a->ms = ms;
+    ms_free2(a);                                        /* (P2.10: once, at the locked part's ms: its quiet compares
+                                                         * times) */
+}
+
+void qd_app_tick(qd_app_t *a, uint32_t ms)
+{
+    uint32_t n;
+    chain_shares(a);                   /* (EvilGenius: as qd_app_tick_locked: the tracks' DRY / WET and room gains;
+                                        * the host's tick never made them, so only the unit heard DRY) */
+    if (!a->started || ms < a->ms) {   /* the first tick (or a clock that restarted): the time starts here */
+        a->started = 1;
+        a->ms = a->free_ms = ms;
+        a->ui.touch_ms = ms;
+        return;
+    }
+    n = ms - a->ms;
+    if (n > 60000u)                    /* (a huge gap: the last minute of it) */
+        n = 60000u;
+    a->ms = ms - n;
+    while (n--) {
+        a->ms++;
+        qd_app_ms(a);
+    }
+    a->ms = a->free_ms = ms;
+}
+
+/* ---------------------------------------------------------------- out --- */
+void qd_app_frame(qd_app_t *a, uint16_t *lcd_be) { qd_view_frame(a, lcd_be); }
+
+int qd_app_frame_strips_changed(qd_app_t *a, uint32_t *mask)
+{
+    const int n = (QD_H + QD_STRIP_H - 1) / QD_STRIP_H;
+    const uint32_t all = n >= 32 ? 0xFFFFFFFFu : (1u << n) - 1u;
+#ifdef QD_DEVICE
+    uint32_t sh[QD_H / QD_STRIP_DEV + 1];
+    uint32_t m = 0;
+    int k;
+    if (qd_view_frame_hashes(a, sh, n)) {               /* (P2.6: the frame recorded: its strips' hashes) */
+        for (k = 0; k < n; k++)
+            if (!a->frame_hash_ok || sh[k] != a->strip_hash[k])
+                m |= 1u << k;
+        memcpy(a->strip_hash, sh, (size_t)n * sizeof sh[0]);
+        a->frame_hash = sh[0] ^ (uint32_t)n;
+    } else {                                            /* (no list: the whole frame's hash, P2.4's) */
+        m = !a->frame_hash_ok || sh[0] != a->frame_hash ? all : 0u;
+        a->frame_hash = sh[0];
+        memset(a->strip_hash, 0, sizeof a->strip_hash);
+    }
+    a->frame_hash_ok = 1;
+    *mask = m;
+    return m != 0;
+#else
+    (void)a;
+    *mask = all;                                        /* (the host's cached layers (the TAP ape) are built while
+                                                         * drawing: every frame drawn) */
+    return 1;
+#endif
+}
+int qd_app_frame_changed(qd_app_t *a)
+{
+    uint32_t m;
+    return qd_app_frame_strips_changed(a, &m);
+}
+void qd_app_frame_strips_mask(qd_app_t *a, uint16_t *strip_be, void (*out)(void *ctx, int y0, int rows, const uint16_t *px),
+                              void *ctx, uint32_t mask)
+{
+    qd_view_frame_strips(a, strip_be, out, ctx, mask);
+}
+void qd_app_frame_strips(qd_app_t *a, uint16_t *strip_be, void (*out)(void *ctx, int y0, int rows, const uint16_t *px),
+                         void *ctx)
+{
+    qd_view_frame_strips(a, strip_be, out, ctx, 0xFFFFFFFFu);
+}
+
+void qd_app_leds(const qd_app_t *a, qd_leds_t *out) { qd_ctl_leds(a, out); }
+qd_app_stats_t *qd_app_stats(qd_app_t *a) { return &a->stats; }
+
+#ifdef QD_GFX_FB
+typedef char qd_fb_band_ok[QD_FB_BAND == QD_STRIP_H ? 1 : -1];
+static void fb_out(void *ctx, int y0, int rows, const uint16_t *px) { (void)ctx, (void)y0, (void)rows, (void)px; }
+void qd_app_fb_attach(qd_app_t *a, uint8_t *const rows[240])
+{
+    qd_fb_attach(rows);
+    a->frame_hash_ok = 0;                               /* (a new frame: every band) */
+}
+const uint16_t *qd_app_palette(const qd_app_t *a, uint32_t *gen)
+{
+    (void)a;
+    return qd_fb_palette_be(gen);
+}
+int qd_app_frame_fb_begin(qd_app_t *a, uint32_t *bands)
+{
+    uint32_t m = 0;
+    qd_app_frame_strips_changed(a, &m);                 /* (the instant: the list recorded, the bands' hashes) */
+    a->fb_pending = m;
+    *bands = m;
+    return m != 0;
+}
+int qd_app_frame_fb_step(qd_app_t *a, int n)
+{
+    uint32_t sub = 0, m = a->fb_pending;
+    int left = 0;
+    while (m && n-- > 0) {
+        const uint32_t low = m & (0u - m);              /* (the topmost band left) */
+        sub |= low, m &= ~low;
+    }
+    a->fb_pending = m;
+    if (sub) {
+        qd_view_keep_list = m != 0;                     /* (more to come: the list, the instant, kept) */
+        qd_view_frame_strips(a, 0, fb_out, 0, sub);
+        qd_view_keep_list = 0;
+    }
+    for (; m; m &= m - 1u)
+        left++;
+    return left;
+}
+uint32_t qd_app_frame_fb_latch(qd_app_t *a, uint32_t *changed)
+{
+    uint32_t m = 0;
+    qd_app_frame_fb_begin(a, &m);
+    *changed = m;
+    if (!m)
+        return 0;
+    if (!qd_dl_kept()) {                                /* (no list: drawn here, live, now) */
+        qd_app_frame_fb_step(a, 32);
+        return 0;
+    }
+    qd_dl_pin(1);
+    a->fb_pending = 0;
+    return m;
+}
+int qd_app_frame_fb_band(int k)
+{
+    if (k < 0 || k * QD_STRIP_H >= QD_H || !qd_dl_kept())
+        return 0;
+    qd_begin_strip(k * QD_STRIP_H);
+    qd_dl_play();
+    return 1;
+}
+void qd_app_frame_fb_done(qd_app_t *a)
+{
+    (void)a;
+    qd_dl_pin(0);
+    qd_dl_drop();
+}
+int qd_app_frame_fb(qd_app_t *a, uint32_t *bands)
+{
+    if (qd_app_frame_fb_begin(a, bands))
+        qd_app_frame_fb_step(a, 32);                    /* (the changed bands drawn into the frame, from that list) */
+    return *bands != 0;
+}
+#endif
+
+/* one control block: the sequencer's events of this block into the pool, the voices (per voice into the mix and the
+ * sends), then ChoralRoot's effects and Output Clean, as 16-bit stereo. P2.6: in three (app.h qd_app_block_*) */
+static void owners_of(qd_app_t *a, qd_quad_owner_t **ow)
+{
+    int i;
+    for (i = 0; i < QD_NTRACK; i++)
+        ow[i] = &a->model.t[i].owner;
+}
+
+void qd_app_block_begin(qd_app_t *a)
+{
+    qd_quad_owner_t *ow[QD_NTRACK];
+    int i;
+    a->proj.nopage++;                                   /* (the audio side: pattern.h) */
+    mo_clock(a);                                        /* FIZZ MIDI (c): the transport and the clock out */
+    qd_player_block(&a->player);
+    {
+        const int b = qd_seq_bpm(&a->seq);              /* (a pattern change or the MIDI clock moved it) */
+        if (b != a->bpm)
+            qd_app_tempo(a, b);
+    }
+    owners_of(a, ow);
+    for (i = 0; i < QD_NTRACK; i++) {
+        ow[i]->defer_off = 1;                           /* (the voices write nothing of their owner's) */
+        a->blk_mt[i] = a->model.t[i].mix;
+    }
+    a->pool.halves = 1;
+    qd_mix_begin(&a->mix, &a->pool, ow, QD_NTRACK);
+    a->proj.nopage--;
+}
+
+void qd_app_block_voices(qd_app_t *a, int v0, int v1, qd_bus_t *bus)
+{
+    bus->n = qd_mix_voices(&a->mix, &a->pool, a->blk_mt, QD_NTRACK, v0, v1, bus->l, bus->r, bus->sc, bus->sd, bus->sr,
+                           bus->rb);
+}
+
+/* the end's own part (P2.6g: a pipelined block's too): the sum, the metronome at its block's beat, the effects at its
+ * block's tempo, the output, the scope */
+static void block_out(qd_app_t *a, const qd_bus_t *A, const qd_bus_t *B, int64_t beat, int metro, int16_t *out)
+{
+    int32_t l[QD_MIX_CTL], r[QD_MIX_CTL], sc[QD_MIX_CTL], sd[QD_MIX_CTL], sr[QD_MIX_CTL], o[2 * QD_MIX_CTL];
+    int i;
+    for (i = 0; i < QD_MIX_CTL; i++) {                  /* A then B (integer sums: either order the same) */
+        l[i] = A->l[i] + B->l[i];
+        r[i] = A->r[i] + B->r[i];
+        sc[i] = A->sc[i] + B->sc[i];
+        sd[i] = A->sd[i] + B->sd[i];
+        sr[i] = A->sr[i] + B->sr[i];
+    }
+    if (metro) {                                        /* P1.5c: the metronome: a click on each beat into the mix
+                                                         * (its own level, no track's), accented on the bar's first */
+        if (beat != a->metro_beat && beat >= 0) {
+            a->metro_beat = beat;
+            a->metro_left = QD_FS / 40;                 /* (25 ms) */
+            a->metro_ph = 0;
+            a->metro_acc = (beat & 3) == 0;             /* (P2.6: beat >= 0: no 64-bit remainder) */
+        }
+        for (i = 0; i < QD_MIX_CTL && a->metro_left; i++, a->metro_left--) {
+            const float t = (float)a->metro_ph / (float)QD_FS, env = expf(-t * 180.f);
+            const float v = sinf(t * 6.2831853f * (a->metro_acc ? 2600.f : 1700.f)) * env *
+                            (a->metro_acc ? 15000.f : 10000.f) * (float)a->metro_lvl / 100.f;
+            l[i] += (int32_t)v, r[i] += (int32_t)v;
+            a->metro_ph++;
+        }
+    } else {
+        a->metro_left = 0;
+        a->metro_beat = -1;
+    }
+    if (a->sfx_left) {                                  /* EvilGenius: THE VOICE's sound effects (integer, the SID's
+                                                         * kind of noise: an LFSR, squares) */
+        for (i = 0; i < QD_MIX_CTL && a->sfx_left; i++, a->sfx_left--, a->sfx_ph++) {
+            const uint32_t ph = a->sfx_ph;
+            int32_t v = 0;
+            if (a->sfx == QD_SFX_ZAP) {                 /* the bolt: noise chopped at 50 Hz, falling */
+                const int32_t env = (int32_t)(a->sfx_left * 256u / (QD_FS * 3 / 10));
+                if ((ph & 3u) == 0u)
+                    a->sfx_lfsr = (a->sfx_lfsr >> 1) ^ (0u - (a->sfx_lfsr & 1u) & 0xD0000001u);
+                v = ((a->sfx_lfsr & 1u) ? 6500 : -6500) * env / 256;
+                if ((ph / 441u) & 1u)
+                    v /= 4;
+            } else if (a->sfx == QD_SFX_BEEPS) {        /* the search: three beeps going up */
+                static const uint16_t HALF[3] = {33, 25, 17};   /* (half periods: 668, 882, 1297 Hz) */
+                const uint32_t k = ph / (QD_FS / 15);
+                if (k < 3u && ph % (QD_FS / 15) < QD_FS / 22)
+                    v = ((ph / HALF[k]) & 1u) ? 4200 : -4200;
+            } else {                                    /* the refusal: two low buzzes */
+                if (ph % (QD_FS / 8) < QD_FS / 11)
+                    v = ((ph / 200u) & 1u) ? 5200 : -5200;
+            }
+            v = v * (int32_t)a->ui.voice_lvl / QD_VOICE_LVL_MAX;
+            l[i] += v, r[i] += v;
+        }
+    }
+    qd_ann_mix(l, r, QD_MIX_CTL);                       /* .. and his line (SAM's buffer, say.h) */
+    qd_fx_rooms(A->rb, B->rb);                          /* (the tracks' sends into the five rooms, for this block) */
+    qd_fx_block(sc, sd, sr, l, r, o);
+    for (i = 0; i < 2 * QD_MIX_CTL; i++)
+        out[i] = (int16_t)(o[i] > 32767 ? 32767 : o[i] < -32768 ? -32768 : o[i]);
+    if (a->geek.scope_on) {                             /* P2.11: the scope's samples, every other one (L + R) / 2 */
+        uint32_t w = a->geek.scope_w;
+        for (i = 0; i < QD_MIX_CTL; i += 2)
+            a->geek.u.scope[w++ & (QD_SCOPE_N - 1u)] = (int16_t)((out[2 * i] + out[2 * i + 1]) / 2);
+        a->geek.scope_w = w;
+    }
+}
+/* 2026-10-27, the Geek Out TRACKS page: the block's voices summed by track, every 8th sample, into the rings; then
+ * the next block's tap on or off (the mixer copies each voice's block while vtap is set) */
+static void tsc_take(qd_app_t *a)
+{
+    qd_geek_t *g = &a->geek;
+    if (g->tsc_on && a->mix.vtap) {
+        uint32_t w = g->tsc_w;
+        int t, i, k;
+        for (k = 0; k < QD_MIX_CTL; k += 8, w++)
+            for (t = 0; t < QD_NTRACK; t++) {
+                int32_t s = 0;
+                for (i = 0; i < a->pool.nvoice; i++)
+                    if (a->pool.v[i].track == t)
+                        s += g->u.tk.vblk[i][k] >> 2;   /* (a voice peaks near 884000: >> 2, a chord fits) */
+                g->u.tk.tsc[t][w % QD_TSC_N] = (int16_t)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
+            }
+        g->tsc_w = w;
+        memset(g->u.tk.vblk, 0, sizeof g->u.tk.vblk);
+    }
+    a->mix.vtap = g->tsc_on ? g->u.tk.vblk : 0;
+}
+void qd_app_block_end(qd_app_t *a, const qd_bus_t *A, const qd_bus_t *B, int16_t *out)
+{
+    tsc_take(a);
+    qd_quad_owner_t *ow[QD_NTRACK];
+    owners_of(a, ow);
+    qd_mix_end(&a->mix, ow, QD_NTRACK, A->n + B->n);
+    block_out(a, A, B, a->beat, a->metro && a->playing, out);
+}
+
+/* P2.6g: the pipelined block (app.h qd_blk_t) */
+void qd_app_block_begin_k(qd_app_t *a, qd_blk_t *k)
+{
+    qd_app_block_begin(a);
+    k->beat = a->beat;
+    k->metro = a->metro && a->playing;
+    k->bpm = a->bpm;
+}
+void qd_app_block_publish(qd_app_t *a, const qd_blk_t *k)
+{
+    qd_quad_owner_t *ow[QD_NTRACK];
+    owners_of(a, ow);
+    qd_mix_end(&a->mix, ow, QD_NTRACK, k->x.n + k->y.n);
+    tsc_take(a);
+}
+void qd_app_block_out(qd_app_t *a, const qd_blk_t *k, int16_t *out)
+{
+    qd_fx_tempo_fx(k->bpm);                             /* (the effects at the tempo its begin knew: the next begin may
+                                                         * have moved a->bpm) */
+    block_out(a, &k->x, &k->y, k->beat, k->metro, out);
+}
+
+static void qd_app_block(qd_app_t *a, int16_t *out)
+{
+    qd_bus_t A, B;                                      /* (1.3 KB of the audio side's stack) */
+    const int mid = a->pool.nvoice / 2;
+    qd_app_block_begin(a);
+    qd_app_block_voices(a, 0, mid, &A);
+    qd_app_block_voices(a, mid, a->pool.nvoice, &B);
+    qd_app_block_end(a, &A, &B, out);
+}
+
+void qd_app_audio(qd_app_t *a, int16_t *stereo, uint32_t frames)
+{
+    a->proj.nopage++;                                   /* P2.4: the audio side reads nothing in (pattern.h) */
+    while (frames) {
+        uint32_t n;
+        if (a->ififo >= a->nfifo) {
+            qd_app_block(a, a->fifo);
+            a->nfifo = QD_MIX_CTL;
+            a->ififo = 0;
+        }
+        n = (uint32_t)(a->nfifo - a->ififo);
+        n = n < frames ? n : frames;
+        memcpy(stereo, a->fifo + 2 * a->ififo, n * 2u * sizeof *stereo);
+        stereo += 2u * n;
+        a->ififo += (int)n;
+        frames -= n;
+    }
+    a->proj.nopage--;
+}
+
+/* ---------------------------------------------------------------- P1.5a: saving (persist.h), the store (core/store) */
+#include "../store/store.c"
+#include "../seq/sounds.h"
+#include "persist.c"
+#include "undo.c"
+#include "fizz_sx.c"                                  /* P1.5r: SysEx (fizz_sx.h) */
+#include "midi_map.c"                                 /* FIZZ MIDI: the CC map, the remote (midi_map.h) */
