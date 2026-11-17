@@ -468,9 +468,22 @@ compiles.
     clip, and into a clip as it comes to be edited.
   - **Shift + Loop's pattern page** now launches a scene; its screen shows the selected track's clip and the one
     queued.
-- **Left for later in Session:** the launch quantize as a setting (`LAUNCH Q`, now always 1 bar), `EMPTY SLOT`, the
-  MIX page's pad columns (button 4 opens today's MIX), MIDI FX's own top row (button 2 opens the core's page), Copy
-  tapped alone (duplicate), New Clip and Double Loop on Shift + steps 14 / 15, undo for clip copy and cut.
+- **Since (17 November 2026):**
+  - **Launch quantize:** the project's launch mode, turned with Shift + the wheel in CLIPS: now, a beat, 1, 2, 4 or 8
+    bars, or the clip's end (the core has 2, 4 and 8 bars now; new projects launch at 1 bar).
+  - **Copy tapped alone** duplicates the selected clip into its track's next empty slot and launches it.
+  - **Shift + step 14 (New Clip)** chooses the selected track's next empty slot (the clip playing goes on; a step put
+    there launches it). **Shift + step 15** is Double Loop (it was on 14, one off the Move's printed icons).
+  - **Undo** takes back a clip's paste, cut, delete and duplicate: each is a level of its own (a level holds one
+    pattern, so the clip's pattern is made the edited one for it).
+  - **MIX (button 4)** is the Move's own: the top row what is set, the rows below the tracks' columns in their colours,
+    knobs 1-8 the tracks, the screen eight bars (PAN: marks either side of the middle).
+  - **MIDI FX (button 2)** is the core's page with the design's gestures: the top row its slots, two taps bypass, a
+    slot held + the wheel moves it, button 2 held + the wheel the track's group, a step held + the wheel the step's.
+    (A double tap on the selected slot also turns its page first: the core's second tap.)
+  - Tests: `tests/clips.txt`, `mix.txt`, `midifx.txt`.
+- **Left for later in Session:** `EMPTY SLOT` (a scene keeping a track playing over an empty slot), MIX's meters, the
+  MIDI FX slots on the pads' LEDs in the track's colour (they show the core's own shading).
 
 **Not built yet:**
 

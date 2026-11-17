@@ -993,6 +993,7 @@ static void t_patterns(void)
     uint32_t t0;
     fresh();
     wake_up();
+    A.proj.launch = QD_LAUNCH_END;                      /* (the Move's projects launch at the bar: the end here) */
     qd_seq_select(&A.seq, 1, 0);                        /* A02 (power-on is A01) */
     tap_button(QD_B_PLAY);
     run(500, 0);

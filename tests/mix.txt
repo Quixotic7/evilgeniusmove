@@ -1,0 +1,68 @@
+# Session's MIX (track button 4 in Session): the top row what is set, the rows below the tracks' columns, the knobs
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session
+cc 50 0
+cc 40 127                # track button 4: MIX (VOLUME)
+cc 40 0
+wait 100
+state mix
+shot 01-volume
+note 68 100              # track 1's column, the lowest pad: a third
+wait 30
+note 68 0
+note 85 100              # track 2's, the highest: full
+wait 30
+note 85 0
+wait 400
+state set
+note 68 100              # track 1's lowest, twice: the default
+wait 30
+note 68 0
+wait 60
+note 68 100
+wait 30
+note 68 0
+wait 100
+state default
+cc 74 20                 # knob 4: track 4's volume up
+cc 74 20
+cc 74 20
+wait 100
+state knob4
+shot 02-knob
+wait 1500
+shot 02b-after
+note 93 100              # top pad 2: PAN
+wait 30
+note 93 0
+wait 100
+note 70 100              # track 3's lowest: left
+wait 30
+note 70 0
+note 91 100              # track 8's highest: right
+wait 30
+note 91 0
+wait 100
+state pan
+shot 03-pan
+note 99 100              # top pad 8: WARP, again GLITCH
+wait 30
+note 99 0
+wait 100
+note 99 100
+wait 30
+note 99 0
+wait 100
+state glitch
+cc 88 127                # Mute held + track 5's column: muted
+note 72 100
+wait 30
+note 72 0
+cc 88 0
+wait 100
+state muted
+cc 43 127                # track button 1: CLIPS again
+cc 43 0
+wait 100
+state clips

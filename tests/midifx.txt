@@ -1,0 +1,55 @@
+# Session's MIDI FX (track button 2 in Session): the core's page, the top row its slots
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session
+cc 50 0
+cc 42 127                # track button 2 held + the wheel: the track's MIDI FX group (1)
+cc 14 1
+wait 50
+cc 42 0
+wait 200
+state mfx
+shot 01-mfx
+note 92 100              # slot 1 held + knob 1: its effect
+cc 71 8
+wait 30
+cc 71 8
+wait 30
+note 92 0
+wait 300
+state slot1-effect
+shot 02-effect
+note 93 100              # slot 2 tapped: selected
+wait 30
+note 93 0
+wait 100
+state slot2
+cc 14 1                  # the wheel alone: the slot's next page
+wait 100
+state page
+note 92 100              # slot 1, two taps: bypassed
+wait 30
+note 92 0
+wait 60
+note 92 100
+wait 30
+note 92 0
+wait 200
+state bypassed
+note 92 100              # .. two taps again: playing
+wait 30
+note 92 0
+wait 60
+note 92 100
+wait 30
+note 92 0
+wait 200
+state playing
+note 92 100              # slot 1 held + the wheel: moved along
+cc 14 1
+wait 50
+note 92 0
+wait 300
+state moved
+wait 1500
+shot 03-later

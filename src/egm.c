@@ -55,7 +55,7 @@ enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_BROWSE, MV_CORE };
 enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER };  /* a page of the Move's own over whatever is up */
 
 /* Shift + a step button: the Move's own shortcuts, by the icons printed under the steps (0: none there) */
-enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_DOUBLE };
+enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_NEWCLIP, SS_DOUBLE };
 static const uint8_t SHIFT_STEP[16] = {
     SS_PROJECTS,                       /* 1  set overview: the projects */
     SS_SETUP,                          /* 2  setup: the settings, and the way out */
@@ -65,8 +65,9 @@ static const uint8_t SHIFT_STEP[16] = {
     SS_NONE, SS_NONE, SS_NONE, SS_NONE,
     SS_MIDIFX,                         /* 11 arp / repeat: the MIDI FX */
     SS_NONE, SS_NONE,
-    SS_DOUBLE,                         /* 14 double loop: the track doubled */
-    SS_NONE, SS_NONE,
+    SS_NEWCLIP,                        /* 14 new clip: the track's next empty slot chosen */
+    SS_DOUBLE,                         /* 15 double loop: the clip doubled */
+    SS_NONE,
 };
 static const char *const SETUP_ITEMS[] = { "SETTINGS", "EXIT", "CLOSE" };
 enum { SETUP_SETTINGS, SETUP_EXIT, SETUP_CLOSE, SETUP_N };
@@ -89,7 +90,10 @@ static const char *const SQ_NAME[SQ_N] = { "TRACKS", "SOUND", "FX", "TOOLS" };
 enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_N };
 static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX" };
 #define NSLOT 16                       /* clip slots a track (A01..A16) */
-#define LAUNCH_Q QD_LAUNCH_BAR         /* a clip launched or stopped: at the next bar */
+#define LAUNCH_Q (A.proj.launch)       /* a clip launched or stopped: the project's launch quantize */
+/* the launch quantize as Shift + the wheel turns it in CLIPS: now (a 16th), a beat, 1, 2, 4, 8 bars, the clip's end */
+static const uint8_t LAUNCH_ORDER[] = { QD_LAUNCH_NOW, QD_LAUNCH_BEAT, QD_LAUNCH_BAR, QD_LAUNCH_BAR2, QD_LAUNCH_BAR4,
+                                        QD_LAUNCH_BAR8, QD_LAUNCH_END };
 static const uint8_t TRK_COL[8] = { 1, 3, 7, 11, 16, 17, 22, 25 };   /* the tracks' colours (the palette's) .. */
 static const uint8_t TRK_DIM[8] = { 65, 69, 77, 85, 95, 97, 107, 113 };   /* .. dim */
 /* TRIG / SOUND's page pads 1-6: the sound pages each cycles through (SND's indices), the first the default. Pads 7, 8:
@@ -233,6 +237,12 @@ static struct {
     int cl_take;                       /* Copy / Delete + a clip: the one taken (track * NSLOT + slot; -1 none) .. */
     int cl_cut;                        /* .. by Delete: cut (kept aside, pasted where tapped next) */
     uint32_t left_ms;                  /* Left's last tap in CLIPS (two: back to the first slots) */
+    int copy_used;                     /* Copy held and a clip tapped (released alone: the clip duplicated) */
+    int mix_k;                         /* Session's MIX: what the knobs and the pad columns set (TS_*) */
+    int mfx_pad, mfx_dbl;              /* the MIDI FX page: a slot pad held (-1 none); a double tap's release to eat */
+    uint32_t mfx_tap_ms[8];            /* .. each slot pad's last tap (two: the slot bypassed) */
+    uint32_t mx_tap_ms[24];            /* .. each column pad's last tap (two: the default) */
+    int undo_cur;                      /* (a clip operation's level: the pattern edited before it) */
     int proj_seen;                     /* the project the clips were last looked at in */
     int rnd_pad;                       /* RND PAGE (6) / RND SOUND (7) held (-1 none) .. */
     uint32_t rnd_ms;                   /* .. since then */
@@ -296,10 +306,28 @@ static int fx_ent(int i, int *page, int *k)
 
 static int mix_native(void) { return S.mode == MV_MIX && A.ui.mix_page % QD_MIX_NPAGE == 0; }
 
+static int mix_on(void);
+static int mix_val(int t, int k);
 static void knob_info(int i, kinfo_t *o)
 {
     memset(o, 0, sizeof *o);
     o->frac = -1;
+    if (i >= 0 && i < 8 && i < QD_TRACKS && mix_on()) {   /* Session's MIX: knob i track i's value */
+        const int v = mix_val(i, S.mix_k);
+        snprintf(o->name, sizeof o->name, "T%d %s", i + 1, TS_NAME[S.mix_k]);
+        if (S.mix_k == TS_PAN) {
+            if (v)
+                snprintf(o->val, sizeof o->val, "%c%d", v < 0 ? 'L' : 'R', v < 0 ? -v : v);
+            else
+                snprintf(o->val, sizeof o->val, "C");
+            o->frac = (v + 64) * 1000 / 127;
+        } else {
+            snprintf(o->val, sizeof o->val, "%d", v);
+            o->frac = v * 1000 / 127;
+        }
+        o->ok = 1;
+        return;
+    }
     if (i >= KI_TRACK && i < KI_TRACK + TS_N && S.tpad >= 0) {   /* a held track pad's level, pan, a send */
         const qd_mix_track_t *m = &A.model.t[S.tpad].mix;
         const int k = i - KI_TRACK;
@@ -440,7 +468,7 @@ static void knob_info(int i, kinfo_t *o)
 /* ------------------------------------------------------------------ names and rides --- */
 static void show_name(const char *name)
 {
-    snprintf(S.name, sizeof S.name, "%s", name);
+    snprintf(S.name, sizeof S.name, "%.19s", name);    /* (S.name holds 19) */
     S.name_until = S.now + NAME_MS;
 }
 
@@ -716,6 +744,74 @@ static void clip_launch(int t, int slot)
 
 static void clip_stop(int t) { qd_seq_stop_track(&A.seq, t, LAUNCH_Q); }
 
+/* a clip operation on pattern k: an undo level of its own (a level holds the pattern edited when its gesture opened:
+ * k is made that one for it, the one edited put back after) */
+static void clip_undo_begin(int k, int kind)
+{
+    S.undo_cur = A.seq.cur;
+    qd_undo_close(&A);
+    A.seq.cur = k;
+    qd_undo_input(&A, 0);
+    qd_undo_hint(&A, kind);
+}
+static void clip_undo_end(void)
+{
+    qd_undo_close(&A);
+    A.seq.cur = S.undo_cur;
+}
+
+static int next_empty(int t, int from)              /* track t's first slot with no clip from slot from on (-1 none) */
+{
+    int k;
+    for (k = from < 0 ? 0 : from; k < NSLOT; k++)
+        if (!clip_has(k, t))
+            return k;
+    return -1;
+}
+
+static void launch_say(void)
+{
+    char v[20];
+    snprintf(v, sizeof v, "LAUNCH %s", A.proj.launch == QD_LAUNCH_END ? "CLIP END" : qd_launch_name(A.proj.launch));
+    show_name(v);
+}
+
+/* Copy tapped alone in CLIPS: the selected track's clip into its next empty slot, launched there */
+static void clip_duplicate(void)
+{
+    const int t = A.sel, from = edit_clip(t), to = next_empty(t, from + 1);
+    if (t >= QD_TRACKS || !clip_has(from, t))
+        return;
+    if (to < 0) {
+        show_name("NO SLOT");
+        return;
+    }
+    clip_undo_begin(to, QD_UK_PASTE);
+    qd_track_copy(qd_proj_pat(&A.proj, to), t, qd_proj_cpat(&A.proj, from), t);
+    clip_undo_end();
+    clip_launch(t, to);
+    if (to >= S.srow + 4)
+        S.srow = to - 3;
+    clip_say("DUPLICATE", to + 1);
+}
+
+/* Shift + step 14: the selected track's next empty slot chosen (the clip playing goes on; a step put there launches
+ * the new one) */
+static void new_clip(void)
+{
+    const int t = A.sel, k = next_empty(t, 0);
+    if (t >= QD_TRACKS)
+        return;
+    if (k < 0) {
+        show_name("NO SLOT");
+        return;
+    }
+    S.tsel[t] = (int8_t)k;
+    if (k >= S.srow + 4 || k < S.srow)
+        S.srow = k > NSLOT - 4 ? NSLOT - 4 : k;
+    clip_say("NEW CLIP", k + 1);
+}
+
 /* a clip pad (row 0 the bottom): tap launches the clip (playing: at the next bar), or on an empty slot chooses it and
  * stops the track; two taps stop the track; Shift: the row's scene (an empty slot stops its track); Copy held: the
  * clip copied, then pasted where tapped; Delete held: cut, then pasted where tapped (not pasted: deleted) */
@@ -731,22 +827,26 @@ static void clip_pad(int idx, int down)
     if (t >= QD_TRACKS || slot < 0 || slot >= NSLOT)
         return;
     if (S.copy_down || S.delete_down) {
+        S.copy_used = 1;
         if (S.cl_take < 0) {
             S.cl_take = t * NSLOT + slot;
             S.cl_cut = S.delete_down;
             if (S.cl_cut) {
                 qd_pat_init(&g_cut);
                 qd_track_copy(&g_cut, 0, qd_proj_cpat(&A.proj, slot), t);
+                clip_undo_begin(slot, QD_UK_CLEAR);
                 qd_track_clear(qd_proj_pat(&A.proj, slot), t);
+                clip_undo_end();
             }
             show_name(S.cl_cut ? "CUT" : "COPIED");
         } else {
             const int st = S.cl_take / NSLOT, ss = S.cl_take % NSLOT;
-            qd_pattern_t *D = qd_proj_pat(&A.proj, slot);
+            clip_undo_begin(slot, QD_UK_PASTE);
             if (S.cl_cut)
-                qd_track_copy(D, t, &g_cut, 0);
+                qd_track_copy(qd_proj_pat(&A.proj, slot), t, &g_cut, 0);
             else if (st != t || ss != slot)
-                qd_track_copy(D, t, qd_proj_cpat(&A.proj, ss), st);
+                qd_track_copy(qd_proj_pat(&A.proj, slot), t, qd_proj_cpat(&A.proj, ss), st);
+            clip_undo_end();
             if (S.cl_cut)                               /* (a cut pastes once; a copy as often as tapped) */
                 S.cl_take = -1;
             show_name("PASTED");
@@ -853,8 +953,13 @@ static void clip_follow(void)
 /* Session's track buttons: its four modes (tapped) */
 static void sess_button(int n, int down)
 {
-    if (!down)
+    if (!down) {
+        if (S.tb_down == n)
+            S.tb_down = -1;
         return;
+    }
+    S.tb_down = n;                                      /* (held: button 2 + the wheel, the MIDI FX group) */
+    S.tb_ms = S.now ? S.now : 1;
     S.sn_mode = n;
     if (n == SN_CLIPS)
         seq_go(SQ_TRACKS);
@@ -863,10 +968,8 @@ static void sess_button(int n, int down)
     else if (n == SN_MFX && !(S.mode == MV_CORE && S.scr == QD_SCR_MFX)) {
         seq_go(SQ_TRACKS);
         tap(B_ARP);
-    } else if (n == SN_MIX && S.mode != MV_MIX) {
+    } else if (n == SN_MIX)                             /* (the Move's own: the core at home) */
         seq_go(SQ_TRACKS);
-        tap(B_ENV);
-    }
     show_name(SN_NAME[n]);
 }
 
@@ -898,13 +1001,13 @@ static int detents(int acc_i, int delta, int div)
 
 /* a held track pad's VOLUME, PAN or a send (TS_*), d detents: through the core's own mix knobs and room sends, the
  * track put selected for the turn (no step is held: a step held would take a lock) */
-static void track_mix(int k, int d)
+static void track_mix_of(int t, int k, int d)       /* track t's level, pan or a send turned d detents */
 {
     static const struct { int8_t page, knob; } MK[5] = { {0, QD_K_1}, {0, QD_K_2}, {1, QD_K_1}, {0, QD_K_3}, {0, QD_K_4} };
     const int keep_sel = A.sel, keep_page = A.ui.mix_page, keep_held = A.ui.nheld;
-    if (S.tpad < 0 || k < 0 || k >= TS_N)
+    if (t < 0 || t >= QD_TRACKS || k < 0 || k >= TS_N)
         return;
-    A.sel = S.tpad;
+    A.sel = t;
     A.ui.nheld = 0;
     if (k < TS_CRUSH) {
         A.ui.mix_page = MK[k].page;
@@ -914,9 +1017,102 @@ static void track_mix(int k, int d)
     A.sel = keep_sel;
     A.ui.mix_page = keep_page;
     A.ui.nheld = keep_held;
+}
+
+static void track_mix(int k, int d)                     /* a track pad held: its level, pan or a send */
+{
+    if (S.tpad < 0)
+        return;
+    track_mix_of(S.tpad, k, d);
     S.tpad_used = 1;
     S.last_knob = KI_TRACK + k;
     S.turn_ms = S.now ? S.now : 1;
+}
+
+/* ------------------------------------------------------------------ Session's MIX --- */
+static int mix_on(void) { return S.session && S.sn_mode == SN_MIX && S.mode == MV_HOME && !S.over; }
+
+static int mix_val(int t, int k)                    /* track t's value k: 0..127 (PAN: -64..63) */
+{
+    const qd_mix_track_t *m = &A.model.t[t].mix;
+    return k == TS_VOL ? m->level : k == TS_PAN ? m->pan : k == TS_CHORUS ? m->chorus : k == TS_ECHO ? m->delay
+         : k == TS_ROOM ? m->reverb : m->room[k - TS_CRUSH];
+}
+
+static void mix_set(int t, int k, int v)            /* .. set (the model's mix: the voices take it at the control rate) */
+{
+    qd_mix_track_t *m = &A.model.t[t].mix;
+    if (k == TS_PAN)
+        m->pan = (int8_t)(v < -64 ? -64 : v > 63 ? 63 : v);
+    else {
+        const uint8_t u = (uint8_t)(v < 0 ? 0 : v > 127 ? 127 : v);
+        if (k == TS_VOL) m->level = u;
+        else if (k == TS_CHORUS) m->chorus = u;
+        else if (k == TS_ECHO) m->delay = u;
+        else if (k == TS_ROOM) m->reverb = u;
+        else m->room[k - TS_CRUSH] = u;
+    }
+}
+
+static void mix_say(int t)
+{
+    char v[24];
+    const int x = mix_val(t, S.mix_k);
+    if (S.mix_k == TS_PAN)
+        snprintf(v, sizeof v, "%d PAN %s%d", t + 1, x < 0 ? "L" : x > 0 ? "R" : "C", x < 0 ? -x : x);
+    else
+        snprintf(v, sizeof v, "%d %s %d", t + 1, TS_NAME[S.mix_k], x);
+    show_name(v);
+}
+
+/* the pads in MIX: the top row what is set (pad 8: WARP, GLITCH, TV in turn); the three rows below a column a track,
+ * tapped at a height: the value there (a third, two thirds, full; PAN: left, centre, right; the lowest tapped again at
+ * its height: 0), two taps: the default; Mute held: the track muted */
+static void mix_pad(int idx, int down)
+{
+    const int c = idx % 8, row = idx / 8;
+    if (!down) {
+        if (S.pad_note[idx] >= 0)
+            note_pad(idx, 0);
+        return;
+    }
+    if (row == 3) {
+        S.mix_k = c < 7 ? c : S.mix_k >= TS_WARP && S.mix_k < TS_TV ? S.mix_k + 1 : TS_WARP;
+        show_name(TS_NAME[S.mix_k]);
+        return;
+    }
+    if (c >= QD_TRACKS)
+        return;
+    if (S.mute_down) {
+        S.mute_used = 1;
+        A.seq.mute ^= (uint8_t)(1u << c);
+        return;
+    }
+    qd_ctl_select_track(&A, c);
+    if (S.mx_tap_ms[idx] && S.now - S.mx_tap_ms[idx] < DOUBLE_MS) {   /* two taps: the default */
+        S.mx_tap_ms[idx] = 0;
+        mix_set(c, S.mix_k, S.mix_k == TS_VOL ? QD_MIX_LEVEL_DEFAULT : 0);
+    } else {
+        int v;
+        S.mx_tap_ms[idx] = S.now ? S.now : 1;
+        if (S.mix_k == TS_PAN)
+            v = row == 0 ? -64 : row == 1 ? 0 : 63;
+        else {
+            v = (row + 1) * 127 / 3;
+            if (row == 0 && mix_val(c, S.mix_k) > 0 && mix_val(c, S.mix_k) <= v)
+                v = 0;                                  /* (the lowest again: off) */
+        }
+        mix_set(c, S.mix_k, v);
+    }
+    mix_say(c);
+}
+
+static int mix_lit(int t, int row)                  /* a column's pad lit: up to the value (PAN: the one pad) */
+{
+    const int v = mix_val(t, S.mix_k);
+    if (S.mix_k == TS_PAN)
+        return row == (v < -21 ? 0 : v > 21 ? 2 : 1);
+    return v * 3 > row * 127;
 }
 
 /* a held step's micro timing or velocity (the hold modes of the core's knob 1, as the home knobs) */
@@ -940,6 +1136,10 @@ static void knob(int i, int delta)
         return;
     if (S.tpad >= 0) {                                  /* a track pad held: knob i its send i */
         track_mix(TS_CHORUS + i, d);
+        return;
+    }
+    if (mix_on()) {                                     /* Session's MIX: knob i track i's value (its pop-up) */
+        track_mix_of(i, S.mix_k, d);
         return;
     }
     if (S.mode == MV_SOUND) {
@@ -992,6 +1192,14 @@ static void wheel(int delta)
         qd_ctl_set_tempo(&A, bpm < 30 ? 30 : bpm > 300 ? 300 : bpm);
     } else if (S.mode == MV_BROWSE) {                   /* the sounds: each one heard on the track as it comes up */
         qd_br_turn(&A, d);
+    } else if (clips_on() && S.shift) {                 /* CLIPS, Shift: the launch quantize */
+        int i, k = 0;
+        for (i = 0; i < (int)sizeof LAUNCH_ORDER; i++)
+            if (LAUNCH_ORDER[i] == A.proj.launch)
+                k = i;
+        k = k + d < 0 ? 0 : k + d >= (int)sizeof LAUNCH_ORDER ? (int)sizeof LAUNCH_ORDER - 1 : k + d;
+        A.proj.launch = LAUNCH_ORDER[k];
+        launch_say();
     } else if (clips_on()) {                            /* CLIPS: the slots shown, a row a detent */
         clip_rows(d < 0 ? -1 : 1);
     } else if (page_mode()) {                           /* the clip's length in pages: longer, the new pages in the
@@ -1009,6 +1217,12 @@ static void wheel(int delta)
             snprintf(v, sizeof v, "%d PAGES", n);
             show_name(v);
         }
+    } else if (S.mode == MV_CORE && S.scr == QD_SCR_MFX && !S.shift) {   /* MIDI FX: a slot held, it moves (the core's
+                                                         * KNOB 2 with its B held); a step held, or Session's track button
+                                                         * 2, the group (PRESETS: the steps' or the track's); else the
+                                                         * slot's pages (SELECT) */
+        qd_app_knob(&A, S.mfx_pad >= 0 ? QD_K_2 : A.ui.nheld || (S.session && S.tb_down == SN_MFX) ? QD_K_PRESETS
+                                                                                                    : QD_K_SELECT, d);
     } else if (S.tpad >= 0) {                           /* a track pad held: its pan */
         track_mix(TS_PAN, d);
     } else if (!S.shift && S.mode == MV_HOME && A.ui.nheld) {   /* a step held: its micro timing */
@@ -1077,6 +1291,7 @@ static void shift_step(int i)
     case SS_TEMPO: S.over = S.over == OV_TEMPO ? OV_NONE : OV_TEMPO; break;
     case SS_METRO: qd_shift_black(&A, 6); break;        /* (the core's SHIFT + B7, by name) */
     case SS_DOUBLE: qd_shift_black(&A, 8); break;       /* (SHIFT + B9) */
+    case SS_NEWCLIP: new_clip(); break;
     case SS_PROJECTS: qd_prj_button(&A); break;         /* (SHIFT + SAVE) */
     case SS_MIDIFX: tap(B_ARP); break;                  /* the MIDI FX page (the core's ARP, tapped) */
     default: break;
@@ -1161,6 +1376,24 @@ static void page_pad(int col, int down, int vel)
             fx_go(col);
         else if (down && col == 6)
             fx_go(S.fpage >= 6 && S.fpage < 8 ? S.fpage + 1 : 6);
+    } else if (S.mode == MV_CORE && S.scr == QD_SCR_MFX) {   /* MIDI FX: the slots (the core's B1..B8: tap selects,
+                                                         * again its next page; held, knob 1 its effect, the wheel moves
+                                                         * it); two taps: the slot bypassed (the core's B10) */
+        if (down && S.mfx_tap_ms[col] && S.now - S.mfx_tap_ms[col] < DOUBLE_MS) {
+            S.mfx_tap_ms[col] = 0;
+            S.mfx_dbl = col;
+            qd_app_key(&A, QD_BLACK_KEY[9], 1, STEP_VEL);
+            qd_app_key(&A, QD_BLACK_KEY[9], 0, 0);
+            return;
+        }
+        if (!down && S.mfx_dbl == col) {
+            S.mfx_dbl = -1;
+            return;
+        }
+        if (down)
+            S.mfx_tap_ms[col] = S.now ? S.now : 1;
+        S.mfx_pad = down ? col : S.mfx_pad == col ? -1 : S.mfx_pad;
+        qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
     } else if (S.mode == MV_HOME) {                     /* TRACKS: select; held, Volume / the wheel / the knobs are its */
         if (down) {
             track_press(col);
@@ -1191,7 +1424,7 @@ static void surface_note(int note, int vel)
             page_step(i, down);
             return;
         }
-        if (clips_on() && !S.shift) {                  /* CLIPS: stop and mute, two under each track */
+        if ((clips_on() || mix_on()) && !S.shift) {   /* CLIPS, MIX: stop and mute, two under each track */
             if (down)
                 clip_step(i);
             return;
@@ -1212,6 +1445,10 @@ static void surface_note(int note, int vel)
         const int idx = note - N_PAD0;                  /* row 0 the bottom */
         if (clips_on()) {                               /* CLIPS: all four rows the clips */
             clip_pad(idx, down);
+            return;
+        }
+        if (mix_on()) {                                 /* MIX: the top row what is set, the rows below the tracks */
+            mix_pad(idx, down);
             return;
         }
         if (page_mode() && idx < 16) {                  /* rows 3-4: the shown page's start and end */
@@ -1345,7 +1582,12 @@ static void surface_cc(int cc, int v)
     case CC_COPY:                                       /* the pattern copied; Shift: pasted (SHIFT + B4 / B5). Page
                                                          * mode: held, a page tapped is copied, then pasted */
         S.copy_down = down;
-        if (clips_on() || (!down && S.cl_take >= 0)) {  /* CLIPS: held, a clip tapped is copied, then pasted */
+        if (clips_on() || (!down && S.cl_take >= 0)) {  /* CLIPS: held, a clip tapped is copied, then pasted; tapped
+                                                         * alone, the selected clip duplicated into the next empty slot */
+            if (down)
+                S.copy_used = 0;
+            else if (!S.copy_used && clips_on())
+                clip_duplicate();
             if (!down && !S.delete_down)
                 S.cl_take = -1;
         } else if (page_mode()) {
@@ -1524,7 +1766,7 @@ static const char *screen_name(int scr)                 /* the core's own pages'
 
 static void sync(void)
 {
-    const int m = mode_now(), scr = qd_view_screen(&A);
+    const int m = mode_now(), scr = qd_view_screen(&A), moved = m != S.mode || scr != S.scr;
     A.ui.shift_stick = 0;                               /* (no SHIFT of the core's is ever left on) */
     A.ui.ekeys = 0;                                     /* the step buttons are always the steps here: the pads are the keys */
     if (m != S.mode) {
@@ -1551,8 +1793,8 @@ static void sync(void)
         else if (m == MV_SOUND) S.seq_mode = SQ_SOUND;
         else if (m == MV_FX) S.seq_mode = SQ_FX;
         else if (m == MV_CORE && scr == QD_SCR_TOOLS) S.seq_mode = SQ_TOOLS;
-        if (S.session) {                                /* (Session's too: Back from MIX is CLIPS again) */
-            if (m == MV_HOME) S.sn_mode = SN_CLIPS;
+        if (S.session && moved) {                       /* (Session's too, as the core moves: Back from FX is CLIPS) */
+            if (m == MV_HOME && S.sn_mode != SN_MIX) S.sn_mode = SN_CLIPS;
             else if (m == MV_FX) S.sn_mode = SN_FX;
             else if (m == MV_MIX) S.sn_mode = SN_MIX;
             else if (m == MV_CORE && scr == QD_SCR_MFX) S.sn_mode = SN_MFX;
@@ -1590,10 +1832,10 @@ static void leds(void)
 {
     qd_leds_t L;
     int i;
-    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on();
+    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on(), mix = mix_on();
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
-        if (clips && !S.shift) {                        /* CLIPS: under each track its stop (the track's colour while it
+        if ((clips || mix) && !S.shift) {               /* CLIPS, MIX: under each track its stop (the track's colour while it
                                                          * plays, blinking while it stops; grey stopped) and its mute (red,
                                                          * soloed yellow) */
             const int t = i / 2;
@@ -1639,6 +1881,15 @@ static void leds(void)
             led_note(N_PAD0 + i, c);
             continue;
         }
+        if (mix) {                                      /* MIX: what is set (the chosen white), the tracks' columns in
+                                                         * their colours up to the value */
+            const int c = i % 8, row = i / 8;
+            led_note(N_PAD0 + i, (uint8_t)(row == 3 ? (c == (S.mix_k >= TS_WARP ? 7 : S.mix_k) ? C_WHITE
+                                                       : c == 0 ? C_LGREY : c == 1 ? C_YELLOW : C_BLUE)
+                                           : c >= QD_TRACKS ? C_OFF : (A.seq.mute >> c & 1u) ? (mix_lit(c, row) ? C_RED : C_OFF)
+                                           : mix_lit(c, row) ? TRK_COL[c] : row == 0 ? TRK_DIM[c] : C_OFF));
+            continue;
+        }
         if (i >= 24 && top_row_on())
             continue;
         if (page_mode() && i < 24) {                    /* rows 3-4: the page's steps, its start and end white, the
@@ -1652,7 +1903,7 @@ static void leds(void)
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
                                                                  : pad_is_root(i) ? C_GREEN : C_GREY));
     }
-    for (i = 0; i < 8 && top_row_on() && !clips; i++) {   /* the top row's keys */
+    for (i = 0; i < 8 && top_row_on() && !clips && !mix; i++) {   /* the top row's keys */
         uint8_t c;
         if (S.mute_down)                                /* Mute held: the tracks, a muted one red, a soloed one yellow */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.solo >> i & 1u) ? C_YELLOW : (A.seq.mute >> i & 1u) ? C_RED
@@ -1726,7 +1977,7 @@ void egm_init(const char *flash_path)
     S.scr = QD_SCR_IDLE;
     S.spage = 3;                                        /* OSC 1: the sound's first page */
     S.fpage = 1;                                        /* CHORUS */
-    S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = S.cl_take = -1;
+    S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = S.cl_take = S.mfx_pad = S.mfx_dbl = -1;
     memset(S.tsel, -1, sizeof S.tsel);
     for (i = 0; i < 6; i++)
         S.grp_last[i] = SND_PAD[i][0];
@@ -1903,6 +2154,15 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (mix_on()) {                                     /* MIX: the tracks' values of what is set */
+        int v[8], mute[8], t;
+        for (t = 0; t < 8; t++) {
+            v[t] = t < QD_TRACKS ? mix_val(t, S.mix_k) : 0;
+            mute[t] = t < QD_TRACKS && (A.seq.mute >> t & 1u);
+        }
+        scr_mix_cols(m, TS_NAME[S.mix_k], v, mute, QD_TRACKS < 8 ? QD_TRACKS : 8, A.sel, S.mix_k == TS_PAN);
+        return;
+    }
     if (clips_on()) {                                   /* CLIPS: the slots shown, the selected clip named */
         uint8_t cell[4][8];
         char title[48];
@@ -2103,8 +2363,8 @@ void egm_describe(char *out, int cap)
              trk_loop(), trk_npage(), A.model.t[A.sel].mix.level);
     {   /* Session: the mode, the rows, each track's clip (x: stopped; >n queued, >x stopping) */
         int t;
-        snprintf(out + strlen(out), (size_t)cap - strlen(out), " session=%d sn=%s srow=%d edit=%d clips=", S.session,
-                 SN_NAME[S.sn_mode], S.srow + 1, A.seq.cur + 1);
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " session=%d sn=%s srow=%d launch=%d edit=%d clips=",
+                 S.session, SN_NAME[S.sn_mode], S.srow + 1, A.proj.launch, A.seq.cur + 1);
         for (t = 0; t < QD_TRACKS; t++) {
             const int q = qd_seq_clip_queued(&A.seq, t);
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%s%d", t ? "," : "", qd_seq_clip_on(&A.seq, t) ? "" : "x",
@@ -2114,6 +2374,18 @@ void egm_describe(char *out, int cap)
             else if (q == -2)
                 snprintf(out + strlen(out), (size_t)cap - strlen(out), ">x");
         }
+        {   /* the selected track's MIDI FX group, its slot selected and page, each slot's effect (b: bypassed) */
+            const int g = qd_mfx_tgroup(&A);
+            int k;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " mfxg=%d mfxs=%d mfxp=%d mfx=", g, A.ui.mfx_slot + 1,
+                     A.ui.mfx_page + 1);
+            for (k = 0; k < QD_MFX_NSLOT && g; k++)
+                snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d%s", k ? "," : "",
+                         A.proj.mfx[g - 1].slot[k].type, A.proj.mfx[g - 1].slot[k].bypass ? "b" : "");
+        }
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " mixk=%s mix=", TS_NAME[S.mix_k]);   /* MIX's value */
+        for (t = 0; t < QD_TRACKS; t++)
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", mix_val(t, S.mix_k));
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " slots=");   /* each track's slots holding a clip */
         for (t = 0; t < QD_TRACKS; t++) {
             unsigned m = 0;

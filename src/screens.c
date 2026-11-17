@@ -727,3 +727,33 @@ void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_
             }
         }
 }
+
+/* ------------------------------------------------------------------ Session's MIX --- */
+void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, int n, int sel, int pan)
+{
+    int i;
+    mono_clear(m);
+    mono_text(m, 1, 1, name, MONO_FS, 1, 1);
+    for (i = 0; i < n && i < 8; i++) {
+        const int x = i * 16 + 2, top = 10, h = 42, w = 12;
+        char num[2] = { (char)('1' + i), 0 };
+        if (pan) {                                      /* the middle line, the mark left or right of it */
+            const int mx = x + w / 2, px = mx + (v[i] < -64 ? -64 : v[i] > 63 ? 63 : v[i]) * (w / 2) / 64;
+            if (mute[i])
+                mono_dots_v(m, mx, top, h, 2);
+            else
+                mono_rect(m, mx, top, 1, h, 1);
+            mono_rect(m, px - 1, top + h / 2 - 3, 3, 7, 1);
+        } else {
+            const int fill = (v[i] < 0 ? 0 : v[i] > 127 ? 127 : v[i]) * (h - 2) / 127;
+            if (mute[i])
+                mono_dither(m, x, top, w, h, 2);
+            mono_box(m, x, top, w, h, 1);
+            if (fill > 0)
+                mono_rect(m, x + 1, top + h - 1 - fill, w - 2, fill, 1);
+        }
+        if (i == sel)
+            mono_rect(m, x, 55, w, 9, 1);
+        mono_ctext(m, x + w / 2, 57, mute[i] ? "M" : num, MONO_FS, 1, i == sel ? 0 : 1);
+    }
+}

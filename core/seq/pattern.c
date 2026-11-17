@@ -201,7 +201,7 @@ void qd_project_init(qd_project_t *pr)
     pr->pool_empty = 0;
     pr->key_scale = QD_SCALE_CHROMATIC;
     pr->key_root = 0;
-    pr->launch = 0;                                     /* (QD_LAUNCH_END) */
+    pr->launch = 1;                                     /* (QD_LAUNCH_BAR: the Move's clips at the next bar) */
     pr->rec_mode = 0;                                   /* P1.3y: LIVE, as played (0 %), CAPTURE */
     pr->rec_quant = 0;
     pr->rec_dub = QD_TAKE_OVERDUB;                     /* (2026-11-13: CAPTURE is the stopped arm's, always) */

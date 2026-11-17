@@ -250,7 +250,9 @@ void qd_seq_block(qd_seq_t *s, qd_seq_out_fn out, void *ctx);
 /* patterns: stopped, the choice is the pattern PLAY starts; playing, it is queued (to the end of the master length,
  * or at the next 16th when immediate). A queue replaces the chain with that pattern alone */
 void qd_seq_select(qd_seq_t *s, int pat, int immediate);   /* immediate: QD_LAUNCH_NOW, else QD_LAUNCH_END */
-enum { QD_LAUNCH_END, QD_LAUNCH_BAR, QD_LAUNCH_BEAT, QD_LAUNCH_NOW, QD_NLAUNCH };
+enum { QD_LAUNCH_END, QD_LAUNCH_BAR, QD_LAUNCH_BEAT, QD_LAUNCH_NOW, QD_LAUNCH_BAR2, QD_LAUNCH_BAR4, QD_LAUNCH_BAR8,
+       QD_NLAUNCH };                    /* (the Move: 2, 4, 8 bars after the FM-1's four) */
+int qd_launch_bars(int launch);         /* a launch's bars (BAR: 1 .. BAR8: 8); 0: not counted in bars */
 void qd_seq_select_at(qd_seq_t *s, int pat, int launch);
 const char *qd_launch_name(int launch);   /* "END", "BAR", "BEAT", "NOW" */
 void qd_seq_chain(qd_seq_t *s, const int *pats, int n);

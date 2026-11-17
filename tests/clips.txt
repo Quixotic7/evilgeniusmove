@@ -1,0 +1,85 @@
+# Session's clip editing: the launch quantize (Shift + wheel), Copy tapped alone (duplicate), New Clip (Shift + step
+# 14), undo of a clip paste and a cut
+tap 85                   # out of the title
+wait 300
+tap 85                   # PLAY
+wait 300
+cc 50 127                # Session
+cc 50 0
+wait 100
+cc 49 127                # Shift + wheel: the launch quantize down to a beat
+cc 14 127
+wait 50
+cc 49 0
+wait 100
+state launch-beat
+cc 49 127                # .. and up to 2 bars
+cc 14 1
+wait 30
+cc 14 1
+wait 30
+cc 49 0
+wait 100
+state launch-2bars
+cc 49 127                # .. back to a bar
+cc 14 127
+wait 30
+cc 49 0
+note 76 100              # track 1's slot 3 selected (launched)
+wait 30
+note 76 0
+wait 100
+cc 60 127                # Copy tapped alone: duplicated into track 1's next empty slot
+cc 60 0
+wait 100
+state duplicated
+shot 01-duplicated
+cc 60 127                # Copy held: track 1's slot 3 into track 7's slot 1, then undone
+note 76 100
+wait 30
+note 76 0
+note 98 100
+wait 30
+note 98 0
+cc 60 0
+wait 100
+state pasted
+cc 56 127                # Undo
+cc 56 0
+wait 100
+state paste-undone
+cc 49 127                # Shift + Undo: redone
+cc 56 127
+cc 56 0
+cc 49 0
+wait 100
+state paste-redone
+cc 119 127               # Delete held + track 7's slot 1, released: deleted; undone
+note 98 100
+wait 30
+note 98 0
+cc 119 0
+wait 100
+state deleted
+cc 56 127
+cc 56 0
+wait 100
+state delete-undone
+note 98 100              # track 7 selected (its slot 1)
+wait 30
+note 98 0
+wait 100
+cc 49 127                # Shift + step 14: New Clip on track 7
+note 29 100
+wait 30
+note 29 0
+cc 49 0
+wait 100
+state new-clip
+cc 50 127                # Sequence: a step on it; it launches
+cc 50 0
+note 16 100
+wait 30
+note 16 0
+wait 2500
+state new-clip-plays

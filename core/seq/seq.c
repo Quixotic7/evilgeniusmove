@@ -846,8 +846,14 @@ static int64_t next_boundary(const qd_seq_t *s, int64_t tick)
 
 const char *qd_launch_name(int launch)
 {
-    static const char *const N[QD_NLAUNCH] = {"END", "BAR", "BEAT", "NOW"};
+    static const char *const N[QD_NLAUNCH] = {"END", "BAR", "BEAT", "NOW", "2 BARS", "4 BARS", "8 BARS"};
     return launch >= 0 && launch < QD_NLAUNCH ? N[launch] : "?";
+}
+
+int qd_launch_bars(int launch)
+{
+    return launch == QD_LAUNCH_BAR ? 1 : launch == QD_LAUNCH_BAR2 ? 2 : launch == QD_LAUNCH_BAR4 ? 4
+         : launch == QD_LAUNCH_BAR8 ? 8 : 0;
 }
 
 void qd_seq_select(qd_seq_t *s, int pat, int immediate)
@@ -880,8 +886,9 @@ void qd_seq_select_at(qd_seq_t *s, int pat, int launch)
         const int64_t now = (s->tick + (s->tick_rem > 0));
         if (launch == QD_LAUNCH_NOW)
             x = qd_div64(now + QD_TPS - 1, QD_TPS) * QD_TPS;
-        else if (launch == QD_LAUNCH_BAR || launch == QD_LAUNCH_BEAT) {   /* from the playing pattern's start */
-            const int64_t u = (launch == QD_LAUNCH_BAR ? 16 : 4) * (int64_t)QD_TPS, d = now - s->origin;
+        else if (qd_launch_bars(launch) || launch == QD_LAUNCH_BEAT) {   /* from the playing pattern's start */
+            const int64_t u = (launch == QD_LAUNCH_BEAT ? 4 : 16 * qd_launch_bars(launch)) * (int64_t)QD_TPS,
+                          d = now - s->origin;
             x = s->origin + (d <= 0 ? 0 : qd_div64(d + u - 1, (int32_t)u) * u);
         } else if (s->sw_pat >= 0)
             x = s->sw_x;                                /* one already queued: the same change point */
@@ -951,7 +958,7 @@ static int64_t launch_x(const qd_seq_t *s, int t, int launch)
         if (L > 0 && L < 0x40000000)
             return s->torigin[t] + (d <= 0 ? 0 : qd_div64(d + L - 1, (int32_t)L) * L);
     }
-    u = (launch == QD_LAUNCH_BEAT ? 4 : 16) * (int64_t)QD_TPS;
+    u = (launch == QD_LAUNCH_BEAT ? 4 : 16 * (qd_launch_bars(launch) ? qd_launch_bars(launch) : 1)) * (int64_t)QD_TPS;
     return now <= 0 ? 0 : qd_div64(now + u - 1, (int32_t)u) * u;
 }
 

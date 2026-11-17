@@ -79,7 +79,7 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Move | Does |
 |---|---|
 | 16 step buttons | the steps: tap, hold to edit, as the FM-1's W1-W16. In page mode: the clip's 16 pages (below) |
-| Shift + step 1 / 2 / 5 / 6 / 11 / 14 | projects / setup (settings, exit) / tempo / metronome / MIDI FX / double the track |
+| Shift + step 1 / 2 / 5 / 6 / 11 / 14 / 15 | projects / setup (settings, exit) / tempo / metronome / MIDI FX / new clip (the selected track's next empty slot chosen; a step put there launches it) / double loop |
 | Top pad row | the mode's shortcuts (below). Hidden: a fourth row of notes |
 | Lower three pad rows | notes in the track's scale; a row up is a fourth up (Shift + - / +: octave) |
 | Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value. A track pad held: its sends (CHORUS, ECHO, ROOM, CRUSH, ROBOT, WARP, GLITCH, TV) |
@@ -100,10 +100,13 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Power button | a menu: CANCEL / POWEROFF |
 | Menu | Sequence <-> Session. Shift + Menu: the core's HOME (again: the next home view) |
 | Back | out of whatever page is open |
-| Track 1-4, in Session | Session's modes: 1 CLIPS, 2 MIDI FX (the core's page), 3 FX, 4 MIX |
+| Track 1-4, in Session | Session's modes: 1 CLIPS, 2 MIDI FX, 3 FX, 4 MIX. Button 2 held + the wheel: the selected track's MIDI FX group |
+| MIX (Session) | top row: what is set (VOLUME, PAN, CHORUS, ECHO, ROOM, CRUSH, ROBOT; pad 8 WARP, GLITCH, TV in turn). The three rows below: a column a track, lit in its colour up to the value; tap a height for a third / two thirds / full (PAN: left / centre / right; the lowest again: 0), two taps the default; Mute held + a column: muted. Knobs 1-8: tracks 1-8. Steps: stop / mute pairs |
+| MIDI FX (Session) | the core's MIDI FX page for the selected track: top row its 8 slots (tap selects, again its next page; held + knob 1 the effect, held + the wheel moves it; two taps: bypassed). The wheel: the slot's pages; a step held + the wheel: that step's group. Knobs: the page's values |
 | Pads, in CLIPS | 8 tracks (columns) x 4 clip slots (rows, of 16). Tap: the clip launched at the next bar (stopped: at once); an empty slot: chosen (the clip edited in Sequence; a step put there launches it) and the track stopped. Two taps: the track stopped. Shift + a pad: that row's scene (an empty slot stops its track). Green: playing; blinking: queued or stopping; the track's colour: a clip; white: the clip edited |
 | Steps, in CLIPS | two under each track: the first stops it (at the bar), the second mutes it (Shift: solo) |
-| Copy / Delete held + a clip, in CLIPS | copied, then pasted where tapped / cut, then pasted where tapped (released first: deleted) |
+| Copy / Delete held + a clip, in CLIPS | copied, then pasted where tapped / cut, then pasted where tapped (released first: deleted). Copy tapped alone: the selected clip duplicated into its track's next empty slot and launched. Undo takes each back |
+| Shift + the wheel, in CLIPS | the launch quantize: now (a 16th), a beat, 1 / 2 / 4 / 8 bars, the clip's end (the project's; new projects: 1 bar) |
 | - / +, Left / Right, the wheel, in CLIPS | the slots shown a row / 4 rows / a row a detent; Left twice: the first four |
 | Shift + Play, in Session | every clip stopped at the next bar, the transport running |
 | Record | arm recording from the pads (stopped: starts with the first note); again: off |
