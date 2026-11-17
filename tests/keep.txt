@@ -1,5 +1,5 @@
 # What a project keeps between runs: run it twice with EGM_FLASH set to the same new file; the second run's start
-# shows the first run's end (each track's clip, stopped or not; track 3's volume)
+# shows the first run's end (each track's clip, stopped or not; track 3's volume; EMPTY SLOT)
 tap 85                   # out of the title
 wait 300
 state start
@@ -17,6 +17,10 @@ wait 100
 note 93 100
 wait 30
 note 93 0
+cc 49 127                # Shift + the wheel pressed: EMPTY SLOT KEEP
+cc 3 127
+cc 3 0
+cc 49 0
 wait 2500
 cc 50 127                # Sequence; track 3 held: its volume down
 cc 50 0

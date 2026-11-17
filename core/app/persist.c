@@ -548,6 +548,7 @@ static uint32_t ser_hdr(const qd_app_t *a, uint8_t *b)
         b[o++] = (uint8_t)qd_seq_clip(&a->seq, t);
         b[o++] = (uint8_t)(qd_seq_clip_on(&a->seq, t) ? 0 : 1);
     }
+    b[o++] = pr->empty_keep;                            /* the Move: EMPTY SLOT (older records: STOP) */
     return o;
 }
 
@@ -560,7 +561,7 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     int t;
     if (len < 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK ||
         len > 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + QD_NTRACK * QD_NROOM +
-                  2 * QD_NTRACK || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
+                  2 * QD_NTRACK + 1 || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
                                                      * made every record too long, so none was read back) */
         b[1] != 1)
         return 0;
@@ -611,6 +612,8 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
                 qd_seq_stop_track(&a->seq, t, QD_LAUNCH_NOW);
         }
     }
+    o += 2u * QD_NTRACK;
+    pr->empty_keep = o < len ? (uint8_t)(b[o] & 1) : 0;   /* the Move: EMPTY SLOT */
     return 1;
 }
 

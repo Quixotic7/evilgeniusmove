@@ -18,8 +18,8 @@ The clip workflow (`design/WORKFLOW.md`) is being built in stages. Stage 1 (Sequ
 buttons, their top rows, Mute held, the hold shortcuts) is in; `tests/modes.txt` exercises it. Stage 2 (8 tracks, 16
 pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it. Stage 3 (clips and Session's CLIPS: each
 track's clips launched and stopped on their own, scenes) is in; `tests/session.txt` exercises it, and
-`tests/keep.txt` (run twice with `EGM_FLASH` set to one store file) checks that a project keeps each track's clip and
-its mix.
+`tests/keep.txt` (run twice with `EGM_FLASH` set to one store file) checks that a project keeps each track's clip,
+its mix and its EMPTY SLOT setting.
 
 A clip is a pattern's part of one track: slot k of a track is pattern A(k+1)'s part, so a pattern is a scene. The core
 plays each track's clip on its own (`core/seq/seq.c`). The
@@ -101,12 +101,13 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Menu | Sequence <-> Session. Shift + Menu: the core's HOME (again: the next home view) |
 | Back | out of whatever page is open |
 | Track 1-4, in Session | Session's modes: 1 CLIPS, 2 MIDI FX, 3 FX, 4 MIX. Button 2 held + the wheel: the selected track's MIDI FX group |
-| MIX (Session) | top row: what is set (VOLUME, PAN, CHORUS, ECHO, ROOM, CRUSH, ROBOT; pad 8 WARP, GLITCH, TV in turn). The three rows below: a column a track, lit in its colour up to the value; tap a height for a third / two thirds / full (PAN: left / centre / right; the lowest again: 0), two taps the default; Mute held + a column: muted. Knobs 1-8: tracks 1-8. Steps: stop / mute pairs |
-| MIDI FX (Session) | the core's MIDI FX page for the selected track: top row its 8 slots (tap selects, again its next page; held + knob 1 the effect, held + the wheel moves it; two taps: bypassed). The wheel: the slot's pages; a step held + the wheel: that step's group. Knobs: the page's values |
+| MIX (Session) | top row: what is set (VOLUME, PAN, CHORUS, ECHO, ROOM, CRUSH, ROBOT; pad 8 WARP, GLITCH, TV in turn). The three rows below: a column a track, lit in its colour up to the value; tap a height for a third / two thirds / full (PAN: left / centre / right; the lowest again: 0), two taps the default; Mute held + a column: muted. Knobs 1-8: tracks 1-8. Steps: stop / mute pairs. The screen: each track's bar (PAN: its mark), its level now beside it |
+| MIDI FX (Session) | the core's MIDI FX page for the selected track: top row its 8 slots (tap selects, again its next page; held + knob 1 the effect, held + the wheel moves it; two taps: bypassed; lit in the track's colour, bypassed dim, the selected white). The wheel: the slot's pages; a step held + the wheel: that step's group. Knobs: the page's values |
 | Pads, in CLIPS | 8 tracks (columns) x 4 clip slots (rows, of 16). Tap: the clip launched at the next bar (stopped: at once); an empty slot: chosen (the clip edited in Sequence; a step put there launches it) and the track stopped. Two taps: the track stopped. Shift + a pad: that row's scene (an empty slot stops its track). Green: playing; blinking: queued or stopping; the track's colour: a clip; white: the clip edited |
 | Steps, in CLIPS | two under each track: the first stops it (at the bar), the second mutes it (Shift: solo) |
 | Copy / Delete held + a clip, in CLIPS | copied, then pasted where tapped / cut, then pasted where tapped (released first: deleted). Copy tapped alone: the selected clip duplicated into its track's next empty slot and launched. Undo takes each back |
 | Shift + the wheel, in CLIPS | the launch quantize: now (a 16th), a beat, 1 / 2 / 4 / 8 bars, the clip's end (the project's; new projects: 1 bar) |
+| Shift + the wheel pressed, in CLIPS | EMPTY SLOT: a scene over a track's empty slot stops the track (STOP, the default) or leaves it playing (KEEP); the project's |
 | - / +, Left / Right, the wheel, in CLIPS | the slots shown a row / 4 rows / a row a detent; Left twice: the first four |
 | Shift + Play, in Session | every clip stopped at the next bar, the transport running |
 | Record | arm recording from the pads (stopped: starts with the first note); again: off |

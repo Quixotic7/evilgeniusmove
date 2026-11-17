@@ -729,13 +729,17 @@ void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_
 }
 
 /* ------------------------------------------------------------------ Session's MIX --- */
-void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, int n, int sel, int pan)
+/* (meter: each track's level now, 0..1000, a 2-pixel bar beside its column; 0: none drawn) */
+void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, const int *meter, int n, int sel, int pan)
 {
     int i;
     mono_clear(m);
     mono_text(m, 1, 1, name, MONO_FS, 1, 1);
     for (i = 0; i < n && i < 8; i++) {
-        const int x = i * 16 + 2, top = 10, h = 42, w = 12;
+        const int x = i * 16 + 1, top = 10, h = 42, w = 11;
+        const int mh = meter ? (meter[i] < 0 ? 0 : meter[i] > 1000 ? 1000 : meter[i]) * h / 1000 : 0;
+        if (mh > 0)                                     /* the meter: from the column's foot up */
+            mono_rect(m, x + w + 1, top + h - mh, 2, mh, 1);
         char num[2] = { (char)('1' + i), 0 };
         if (pan) {                                      /* the middle line, the mark left or right of it */
             const int mx = x + w / 2, px = mx + (v[i] < -64 ? -64 : v[i] > 63 ? 63 : v[i]) * (w / 2) / 64;

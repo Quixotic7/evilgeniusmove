@@ -362,6 +362,8 @@ typedef struct {
                                          * FULL (every key as the keyboard; the pages on SELECT) */
     qd_mfx_group_t mfx[QD_MFX_NGROUP];  /* P1.6c: the MIDI FX groups (mfx.h) */
     uint8_t rec_auto;                   /* P1.6d: AUTOMATION: armed live recording records knob moves too (1 ON) */
+    uint8_t empty_keep;                 /* the Move's EMPTY SLOT: a scene launched over a track's empty slot stops the
+                                         * track (0, as Live and the Move do) or leaves it playing (1) */
 } qd_project_t;
 enum { QD_TAKE_CAPTURE, QD_TAKE_OVERDUB, QD_TAKE_REPLACE };   /* qd_project_t.rec_dub */
 /* the MIDI FX group a step of track t plays through: 0 none, 1..5 (the step's, else the track's) */

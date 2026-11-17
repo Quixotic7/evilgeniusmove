@@ -64,7 +64,7 @@ void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_
                  uint32_t ms);
 /* Session's MIX: what is set (its name on top) for n tracks: v 0..127 a bar (pan: -64..63, a mark either side of the
  * middle), muted ones dotted, the selected one's number under a bar */
-void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, int n, int sel, int pan);
+void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, const int *meter, int n, int sel, int pan);
 /* a short menu: three rows shown, the chosen one a solid bar */
 void scr_menu(mono_t *m, const char *const *items, int n, int sel);
 

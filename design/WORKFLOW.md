@@ -378,7 +378,7 @@ Changes:
    - A project holds 8 × 16 clips, a slot table, the tempo and the swing.
    - The sequencer needs one playing clip and one queued clip on each track, with a launch quantize, in place of
      `sw_pat`.
-   - Chains (`QD_SEQ_NCHAIN`) go, or become scene follow actions (see the open questions).
+   - Chains (`QD_SEQ_NCHAIN`) convert into ARRANGE (decided 17 November 2026).
    - Paging on the device stays possible, with one record for each clip.
    - **Name clash:** `seq/clip.h` today is the clipboard. Rename it (for example `clipboard.h`) before adding clips.
 3. **Storage.**
@@ -482,8 +482,16 @@ compiles.
     slot held + the wheel moves it, button 2 held + the wheel the track's group, a step held + the wheel the step's.
     (A double tap on the selected slot also turns its page first: the core's second tap.)
   - Tests: `tests/clips.txt`, `mix.txt`, `midifx.txt`.
-- **Left for later in Session:** `EMPTY SLOT` (a scene keeping a track playing over an empty slot), MIX's meters, the
-  MIDI FX slots on the pads' LEDs in the track's colour (they show the core's own shading).
+- **Then the last three of Session:**
+  - **`EMPTY SLOT`:** Shift + the wheel pressed in CLIPS turns it between STOP (a scene stops a track whose slot is
+    empty, as Live and the Move do; the default) and KEEP (that track plays on). The project's, saved in its header
+    record (older records: STOP).
+  - **MIX's meters:** each track's level now, a bar beside its column (the core's mix meter: its voices' level times
+    its volume), in both the volume and the pan view.
+  - **MIDI FX's slots on the pads** in the selected track's colour: an effect lit, bypassed dim, empty off; the
+    selected slot white (bypassed: light grey; empty: grey).
+  - Tests: `tests/clips.txt` (EMPTY SLOT both ways), `keep.txt` (EMPTY SLOT kept), `mix.txt` (plays, for the
+    meters), `midifx.txt` (the state line's `toprow=`: the top row's colours as sent).
 
 **Not built yet:**
 
@@ -511,12 +519,15 @@ too.
 
 ## Open questions for the user
 
-1. **Banks B-D on conversion:** separate projects, or 64 scenes as four banks of 16?
-2. **Chains:** do today's chains convert into ARRANGE?
-3. **Pad row 2 in page mode** is unused. Should it hold page rate, or the page's 16 steps' trigs as a preview?
-4. **Sequence FX on one track:** the core's effects are shared rooms on the mix. Is "the selected track" its sends and
-   throws only (as drawn), or a per-track effect of its own (a much larger core change)?
-5. **Track 8's indigo** may look like track 4's blue on the pads; check on a unit.
+1. **Track 8's indigo** may look like track 4's blue on the pads; check on a unit.
+
+## Decided by the user (17 November 2026)
+
+- **Banks B-D on conversion:** one project keeps all four banks as 64 scenes, four banks of 16, paged in Session.
+- **Chains** convert into ARRANGE: a chain's patterns laid out in order as scenes on its timeline.
+- **Pad row 2 in page mode** previews a page's 16 steps' trigs (the page under the finger, else the playing page).
+- **Sequence FX on one track** is that track's sends and throws only, as drawn; the rooms stay shared on the mix (no
+  per-track effect).
 
 ## Decided by the user (16 November 2026)
 

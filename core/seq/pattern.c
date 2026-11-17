@@ -208,6 +208,7 @@ void qd_project_init(qd_project_t *pr)
     pr->rec_ekeys = 0;                                  /* P1.5b: the editor's keyboard: SCALE */
     memset(pr->mfx, 0, sizeof pr->mfx);                 /* P1.6c: the MIDI FX groups empty */
     pr->rec_auto = 1;                                   /* P1.6d: AUTOMATION ON (live recording's knobs, as before) */
+    pr->empty_keep = 0;                                 /* (the Move's EMPTY SLOT: STOP) */
 }
 
 /* ---------------------------------------------------------------- P2.1: the patterns paged */

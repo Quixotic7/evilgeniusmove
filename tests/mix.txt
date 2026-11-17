@@ -1,6 +1,8 @@
 # Session's MIX (track button 4 in Session): the top row what is set, the rows below the tracks' columns, the knobs
 tap 85                   # out of the title
 wait 300
+tap 85                   # PLAY (the meters beside the columns)
+wait 1200
 cc 50 127                # Session
 cc 50 0
 cc 40 127                # track button 4: MIX (VOLUME)

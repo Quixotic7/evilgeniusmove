@@ -34,7 +34,7 @@ cc 60 0
 wait 100
 state duplicated
 shot 01-duplicated
-cc 60 127                # Copy held: track 1's slot 3 into track 7's slot 1, then undone
+cc 60 127                # Copy held: track 1's slot 3 into track 7's slot 2 (rows scrolled), undone
 note 76 100
 wait 30
 note 76 0
@@ -54,7 +54,7 @@ cc 56 0
 cc 49 0
 wait 100
 state paste-redone
-cc 119 127               # Delete held + track 7's slot 1, released: deleted; undone
+cc 119 127               # Delete held + track 7's slot 2, released: deleted; undone
 note 98 100
 wait 30
 note 98 0
@@ -65,21 +65,49 @@ cc 56 127
 cc 56 0
 wait 100
 state delete-undone
-note 98 100              # track 7 selected (its slot 1)
+note 98 100              # track 7 selected (its slot 2 queued)
 wait 30
 note 98 0
 wait 100
-cc 49 127                # Shift + step 14: New Clip on track 7
+cc 49 127                # Shift + step 14: New Clip on track 7 (its slot 1, empty)
 note 29 100
 wait 30
 note 29 0
 cc 49 0
 wait 100
 state new-clip
-cc 50 127                # Sequence: a step on it; it launches
+cc 50 127                # Sequence: a step on it; it launches (slot 2's queue replaced)
 cc 50 0
 note 16 100
 wait 30
 note 16 0
 wait 2500
 state new-clip-plays
+cc 50 127                # Session again
+cc 50 0
+wait 100
+state before-scene
+cc 49 127                # Shift + the wheel pressed: EMPTY SLOT KEEP
+cc 3 127
+cc 3 0
+cc 49 0
+wait 100
+state empty-keep
+cc 49 127                # Shift + slot 2's row: its scene; the tracks with no clip there play on
+note 92 100
+wait 30
+note 92 0
+cc 49 0
+wait 2500
+state scene-keep
+cc 49 127                # EMPTY SLOT STOP again; the row's scene: those tracks stop
+cc 3 127
+cc 3 0
+cc 49 0
+cc 49 127
+note 92 100
+wait 30
+note 92 0
+cc 49 0
+wait 2500
+state scene-stop

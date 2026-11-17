@@ -813,7 +813,8 @@ static void new_clip(void)
 }
 
 /* a clip pad (row 0 the bottom): tap launches the clip (playing: at the next bar), or on an empty slot chooses it and
- * stops the track; two taps stop the track; Shift: the row's scene (an empty slot stops its track); Copy held: the
+ * stops the track; two taps stop the track; Shift: the row's scene (an empty slot stops its track, or with EMPTY SLOT
+ * KEEP leaves it playing); Copy held: the
  * clip copied, then pasted where tapped; Delete held: cut, then pasted where tapped (not pasted: deleted) */
 static void note_pad(int idx, int vel);
 static void clip_pad(int idx, int down)
@@ -853,12 +854,12 @@ static void clip_pad(int idx, int down)
         }
         return;
     }
-    if (S.shift) {                                      /* the row: a scene */
+    if (S.shift) {                                      /* the row: a scene (an empty slot: EMPTY SLOT's) */
         int k;
         for (k = 0; k < QD_TRACKS; k++)
             if (clip_has(slot, k))
                 clip_launch(k, slot);
-            else
+            else if (!A.proj.empty_keep)
                 clip_stop(k);
         clip_say("SCENE", slot + 1);
         return;
@@ -1276,7 +1277,13 @@ static void wheel_click(int down)
             S.quit = 2;
         return;
     }
-    if (S.mode == MV_BROWSE) {                          /* the sound shown: taken */
+    if (clips_on() && S.shift) {                        /* CLIPS, Shift: EMPTY SLOT (a scene over a track's empty slot
+                                                         * stops it, or leaves it playing) */
+        if (down) {
+            A.proj.empty_keep ^= 1u;
+            show_name(A.proj.empty_keep ? "EMPTY SLOT KEEP" : "EMPTY SLOT STOP");
+        }
+    } else if (S.mode == MV_BROWSE) {                   /* the sound shown: taken */
         if (down)
             qd_br_load(&A);
     } else if (S.mode == MV_CORE)                       /* the core's own menus: yes / enter (its OCT+) */
@@ -1913,7 +1920,15 @@ static void leds(void)
                           : snd_pad_of(S.spage) == i ? C_WHITE : i >= 4 ? C_LTBLUE : C_LGREY);
         else if (S.mode == MV_FX)                       /* the floors; pad 7 WARP / GLITCH / TV; pad 8 PERFORM (later) */
             c = (uint8_t)(i == 7 ? C_OFF : S.fpage == i || (i == 6 && S.fpage >= 6) ? C_WHITE : C_BLUE);
-        else if (S.mode == MV_HOME)                     /* the tracks: the selected one, a flash as each plays */
+        else if (S.mode == MV_CORE && S.scr == QD_SCR_MFX) {   /* MIDI FX: the slots in the track's colour (bypassed:
+                                                         * dim; empty: off), the selected one white (bypassed: light
+                                                         * grey; empty: grey) */
+            const int g = qd_mfx_tgroup(&A), tc = A.sel < 8 ? A.sel : 7;
+            const qd_mfx_slot_t *sl = g > 0 && i < QD_MFX_NSLOT ? &A.proj.mfx[g - 1].slot[i] : 0;
+            const int has = sl && sl->type != QD_MFX_NONE;
+            c = (uint8_t)(i == A.ui.mfx_slot ? (!has ? C_GREY : sl->bypass ? C_LGREY : C_WHITE) : !has ? C_OFF
+                          : sl->bypass ? TRK_DIM[tc] : TRK_COL[tc]);
+        } else if (S.mode == MV_HOME)                   /* the tracks: the selected one, a flash as each plays */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.mute >> i & 1u) ? C_RED : A.sel == i ? C_WHITE
                           : qd_ctl_trig_flash(&A, i) ? C_LTBLUE : C_BLUE);
         else
@@ -2155,12 +2170,16 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
     if (mix_on()) {                                     /* MIX: the tracks' values of what is set */
-        int v[8], mute[8], t;
+        ui_mix_t mv;
+        int v[8], mute[8], meter[8], t;
+        memset(&mv, 0, sizeof mv);
+        qd_view_mix(&A, &mv);                           /* (the meters: each track's voices' level now) */
         for (t = 0; t < 8; t++) {
             v[t] = t < QD_TRACKS ? mix_val(t, S.mix_k) : 0;
             mute[t] = t < QD_TRACKS && (A.seq.mute >> t & 1u);
+            meter[t] = t < QD_TRACKS ? (int)(mv.tr[t].meter * 1000.f) : 0;
         }
-        scr_mix_cols(m, TS_NAME[S.mix_k], v, mute, QD_TRACKS < 8 ? QD_TRACKS : 8, A.sel, S.mix_k == TS_PAN);
+        scr_mix_cols(m, TS_NAME[S.mix_k], v, mute, meter, QD_TRACKS < 8 ? QD_TRACKS : 8, A.sel, S.mix_k == TS_PAN);
         return;
     }
     if (clips_on()) {                                   /* CLIPS: the slots shown, the selected clip named */
@@ -2363,8 +2382,9 @@ void egm_describe(char *out, int cap)
              trk_loop(), trk_npage(), A.model.t[A.sel].mix.level);
     {   /* Session: the mode, the rows, each track's clip (x: stopped; >n queued, >x stopping) */
         int t;
-        snprintf(out + strlen(out), (size_t)cap - strlen(out), " session=%d sn=%s srow=%d launch=%d edit=%d clips=",
-                 S.session, SN_NAME[S.sn_mode], S.srow + 1, A.proj.launch, A.seq.cur + 1);
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " session=%d sn=%s srow=%d launch=%d empty=%s edit=%d clips=",
+                 S.session, SN_NAME[S.sn_mode], S.srow + 1, A.proj.launch, A.proj.empty_keep ? "keep" : "stop",
+                 A.seq.cur + 1);
         for (t = 0; t < QD_TRACKS; t++) {
             const int q = qd_seq_clip_queued(&A.seq, t);
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%s%d", t ? "," : "", qd_seq_clip_on(&A.seq, t) ? "" : "x",
@@ -2383,6 +2403,9 @@ void egm_describe(char *out, int cap)
                 snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d%s", k ? "," : "",
                          A.proj.mfx[g - 1].slot[k].type, A.proj.mfx[g - 1].slot[k].bypass ? "b" : "");
         }
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " toprow=");   /* the top row's colours as sent */
+        for (t = 0; t < 8; t++)
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", S.led_note[N_PAD0 + 24 + t]);
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " mixk=%s mix=", TS_NAME[S.mix_k]);   /* MIX's value */
         for (t = 0; t < QD_TRACKS; t++)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", mix_val(t, S.mix_k));
