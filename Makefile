@@ -32,7 +32,7 @@ INC := -Isrc $(addprefix -I$(CORE)/,app ui gfx seq voice voice/quad voice/sid vo
 DEFS := -DSID_COMB_CONST -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD -DQD_USB_HOST=1 \
         -DQD_TRACKS=8 -DQD_NSTEP=256
 
-EGM_SRC := src/egm.c src/flash.c src/mono.c src/screens.c $(if $(NO_SAM),src/say_stub.c,)
+EGM_SRC := src/egm.c src/flash.c src/mono.c src/screens.c src/perform.c $(if $(NO_SAM),src/say_stub.c,)
 PLAT_SRC := $(if $(filter move,$(TARGET)),src/plat_move.c,src/plat_sim.c)
 BIN := $(if $(filter move,$(TARGET)),evilgenius-host,egm-sim)
 LIBS := -lm -lpthread $(if $(filter move,$(TARGET)),-lrt -static,)

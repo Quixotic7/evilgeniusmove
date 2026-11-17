@@ -558,10 +558,16 @@ static uint32_t ser_hdr(const qd_app_t *a, uint8_t *b)
         b[o++] = c->launch, b[o++] = c->colour, b[o++] = c->name;
     }
     memcpy(b + o, pr->song, sizeof pr->song), o += sizeof pr->song;
+    b[o++] = ps->pcol[ps->proj];                        /* the Move: the project's colour, the last byte (read at the
+                                                         * mount for every project: the projects' pads) */
     return o;
 }
 
 #define QD_SCENE_REC 9                                  /* (a scene's bytes in the header record) */
+/* the header record's whole length now (the Move's: the rooms, the clips, EMPTY SLOT, the tempo, the scenes, the
+ * song, the colour) */
+#define HDR_FULL (2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + \
+                  QD_NTRACK * QD_NROOM + 2 * QD_NTRACK + 1 + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG + 1)
 static int g_clips_read;                                /* the Move: the project's record gave each track's clip */
 static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
 {
@@ -570,13 +576,13 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     uint32_t o = 2;
     int t;
     if (len < 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK ||
-        len > 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + QD_NTRACK * QD_NROOM +
-                  2 * QD_NTRACK + 1 + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
-                                                     * made every record too long, so none was read back) */
+        len > HDR_FULL || b[0] != 'H' ||                /* (the Move, 2026-11-17: everything counted; the rooms made
+                                                         * every record too long once, so none was read back) */
         b[1] != 1)
         return 0;
     memcpy(ps->pname[p], b + o, QD_PROJ_NAME), o += QD_PROJ_NAME;
     ps->pname[p][QD_PROJ_NAME - 1] = 0;
+    ps->pcol[p] = len == HDR_FULL ? b[len - 1] : 0;     /* (the Move: its colour; older records: none) */
     if (!apply)
         return 1;
     ps->pdemo = b[o++];
@@ -1616,6 +1622,21 @@ int qd_proj_delete(qd_app_t *a, int p)
     proj_erase_records(a, p);
     names_read(a);
     return 1;
+}
+
+void qd_proj_colour(qd_app_t *a, int p, int colour)
+{
+    qd_persist_t *ps = &a->per;
+    if (p < 0 || p >= QD_NPROJ)
+        return;
+    ps->pcol[p] = (uint8_t)colour;
+    if (ps->on && p != ps->proj && ps->pexists[p]) {    /* (another project: its header now) */
+        const int len = qd_store_get(&ps->prj_st, QD_RKEY(QD_RK_HDR, p, 0), pr_buf, sizeof pr_buf);
+        if (len == (int)HDR_FULL) {
+            pr_buf[len - 1] = (uint8_t)colour;
+            put_now(&ps->prj_st, QD_RKEY(QD_RK_HDR, p, 0), pr_buf, (uint32_t)len);
+        }
+    }
 }
 
 void qd_proj_name(qd_app_t *a, int p, const char *name)

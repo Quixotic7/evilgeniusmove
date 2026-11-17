@@ -1,0 +1,7 @@
+# the idle screen: any pad, step or button press wakes it and does nothing else
+state idle
+note 70 100              # a pad: awake, no note played
+wait 30
+note 70 0
+wait 200
+state pad-woke

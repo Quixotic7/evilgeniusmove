@@ -1,0 +1,48 @@
+# Mute held, anywhere: a knob touched mutes its track; two touches solo it; Shift too: solo
+tap 85                   # out of the title
+wait 300
+cc 88 127                # Mute held + knob 3 touched: track 3 muted
+note 2 100
+wait 30
+note 2 0
+wait 300
+state knob3-muted
+note 4 100               # .. knob 5 twice: track 5 soloed
+wait 30
+note 4 0
+wait 60
+note 4 100
+wait 30
+note 4 0
+wait 100
+cc 71 8                  # (a knob turned meanwhile: nothing)
+cc 88 0
+wait 100
+state knob5-soloed
+cc 50 127                # Session (CLIPS): Mute + Shift + knob 8: track 8 soloed
+cc 50 0
+wait 100
+cc 88 127
+cc 49 127
+note 7 100
+wait 30
+note 7 0
+cc 49 0
+cc 88 0
+wait 100
+state session-solo
+cc 88 127                # Mute held + knob 2 turned: track 2's volume down (no mute); knob 2 touched alone: muted
+note 1 100
+cc 72 124
+cc 72 124
+cc 72 124
+wait 100
+note 1 0
+wait 100
+state knob2-volume
+note 1 100
+wait 30
+note 1 0
+cc 88 0
+wait 100
+state knob2-muted

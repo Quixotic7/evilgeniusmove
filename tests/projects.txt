@@ -1,0 +1,50 @@
+# PROJECTS (Shift + step 1): the 32 projects on the pads; a tap opens one or starts a new one; Copy, Delete; knob 1
+# the name, knob 2 the colour. Run with EGM_FLASH set to a new file
+tap 85                   # out of the title
+wait 300
+cc 49 127                # Shift + step 1: PROJECTS
+note 16 100
+note 16 0
+cc 49 0
+wait 100
+state open
+shot 01-projects
+note 93 100              # project 2's pad (empty): a new project there
+wait 30
+note 93 0
+wait 1500
+state new2
+cc 71 4                  # knob 1: a name; knob 2: track 3's colour
+wait 30
+cc 72 4
+cc 72 4
+cc 72 4
+wait 3000
+state named
+shot 02-named
+cc 60 127                # Copy held: project 2 onto project 4
+note 93 100
+note 93 0
+note 95 100
+note 95 0
+cc 60 0
+wait 1000
+state copied
+cc 119 127               # Delete held + project 4 twice: deleted
+note 95 100
+note 95 0
+wait 100
+state armed
+note 95 100
+note 95 0
+cc 119 0
+wait 1000
+state deleted
+note 92 100              # project 1: open again
+note 92 0
+wait 1500
+state back-to-1
+cc 51 127                # Back: closed
+cc 51 0
+wait 100
+state closed

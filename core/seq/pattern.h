@@ -377,12 +377,13 @@ typedef struct {
                                          * starting pool) */
     uint8_t rec_ekeys;                  /* P1.5b: the keyboard in the sound editor: 0 SCALE (W the scale, B the pages), 1
                                          * FULL (every key as the keyboard; the pages on SELECT) */
-    qd_mfx_group_t mfx[QD_MFX_NGROUP];  /* P1.6c: the MIDI FX groups (mfx.h) */
     uint8_t rec_auto;                   /* P1.6d: AUTOMATION: armed live recording records knob moves too (1 ON) */
     uint8_t empty_keep;                 /* the Move's EMPTY SLOT: a scene launched over a track's empty slot stops the
                                          * track (0, as Live and the Move do) or leaves it playing (1) */
     uint16_t bpm;                       /* the Move: the project's tempo, as last set (0: none kept; a scene's own tempo
                                          * leaves it alone) */
+    /* undo's fourth region (undo.h QD_UNDO_R3): from mfx to the end of song, together */
+    qd_mfx_group_t mfx[QD_MFX_NGROUP];  /* P1.6c: the MIDI FX groups (mfx.h) */
     qd_scene_t scene[QD_NSCENE];        /* the Move's SCENES: scene k is slot k on every track (pattern k) */
     uint8_t song[QD_NSONG][2];          /* the Move's ARRANGE: each position's scene + 1 (0: the song ends there), its
                                          * repeats (1..16) */

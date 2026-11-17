@@ -189,7 +189,7 @@
 #define QD_UNDO_POOL 65536u            /* (the levels' differences; the gesture's before: whole copies) */
 #define QD_STRIP_H 240                 /* (the whole screen at once; the pixel test draws it in QD_STRIP_DEV-row strips) */
 #define QD_UNDO_XLOCKS 2048
-#define QDS_MAXKEY 2048
+#define QDS_MAXKEY 16384               /* (the Move: 992 project sectors, 15 record pages each) */
 #define QDS_JOBBUF 28800               /* (QDS_MAXREC: every record copied, as in Phase 1) */
 #define QD_LIB_KEYS QDS_MAXKEY
 #define QD_PRJ_KEYS QDS_MAXKEY

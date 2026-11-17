@@ -100,7 +100,10 @@ void qd_quad_side_pack(const int16_t *p, uint8_t *b);
 void qd_quad_side_unpack(const uint8_t *b, int midi, int16_t *p);
 
 enum { QD_QM_SRC, QD_QM_DST, QD_QM_DEPTH };
-enum { QD_MS_OFF, QD_MS_VEL, QD_MS_KEY, QD_MS_MW, QD_MS_AT, QD_MS_PB, QD_MS_BR, QD_MS_RAND, QD_MS_FENV, QD_MS_N };
+enum { QD_MS_OFF, QD_MS_VEL, QD_MS_KEY, QD_MS_MW, QD_MS_AT, QD_MS_PB, QD_MS_BR, QD_MS_RAND, QD_MS_FENV,
+       QD_MS_ENV1, QD_MS_ENV2, QD_MS_ENV3,      /* the Move's mod matrix: the three SID envelopes' levels .. */
+       QD_MS_LFO1, QD_MS_LFO2, QD_MS_LFO3,      /* .. the three LFOs' waves (their own DEPTH aside: a slot its own) */
+       QD_MS_N };
 #define QD_QP_MOD(k, f) (QD_QP_MOD0 + (k) * 3 + (f))
 #define QD_NMOD 8
 enum { QD_PORT_OFF, QD_PORT_ON, QD_PORT_LEGATO };

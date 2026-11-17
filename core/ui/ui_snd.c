@@ -369,7 +369,8 @@ static void sd_voice(const ui_snd_t *v)
 
 static void sd_mod(const ui_snd_t *v)
 {
-    static const char *const SRC[QD_MS_N] = {"-", "VEL", "KEY", "MW", "AT", "PB", "BR", "RAND", "FENV"};
+    static const char *const SRC[QD_MS_N] = {"-", "VEL", "KEY", "MW", "AT", "PB", "BR", "RAND", "FENV", "ENV1", "ENV2",
+                                             "ENV3", "LFO1", "LFO2", "LFO3"};
     int k;
     for (k = 0; k < QD_NMOD; k++) {
         const int y = SD_TOP + 1 + k * 9, sel = k == v->mod_sel, src = v->mod_src[k];

@@ -1,0 +1,55 @@
+# Session's page belt (moving, settled) and the SEQ page: TIME, REC, CLOCK on the wheel
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session
+cc 50 0
+wait 1200
+cc 14 1                  # the belt: MIDI FX, moving
+wait 80
+shot 01-belt-moving
+wait 300
+shot 02-belt-midifx
+cc 14 1                  # .. on to MIX, then SEQ
+cc 14 1
+wait 300
+shot 03-belt-mix
+cc 14 1
+cc 14 1
+cc 14 1
+wait 300
+state belt-seq
+shot 04-belt-seq
+cc 3 127                 # pressed: SEQ (TIME)
+cc 3 0
+wait 1200
+state time
+shot 05-time
+cc 72 4                  # SWING up 2, METRO on, CLICK down
+cc 72 4
+cc 74 4
+cc 75 124
+wait 100
+state time-set
+cc 14 1                  # REC: STEP, QUANT 10, REPLACE
+wait 30
+cc 71 4
+cc 72 4
+cc 72 4
+cc 73 4
+wait 1200
+state rec
+shot 06-rec
+cc 14 1                  # CLOCK: clock out off
+wait 30
+cc 71 124
+wait 1200
+state clock
+shot 07-clock
+cc 51 127                # Back: the belt on SEQ; Back: the clips
+cc 51 0
+wait 300
+state back-belt
+cc 51 127
+cc 51 0
+wait 100
+state back-clips

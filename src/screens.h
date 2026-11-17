@@ -67,8 +67,14 @@ void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_
 void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, const int *meter, int n, int sel, int pan);
 /* a short menu: three rows shown, the chosen one a solid bar */
 void scr_menu(mono_t *m, const char *const *items, int n, int sel);
+/* MIDI FX: the group's eight slots, the selected effect and page, knobs 1-4's labels and values (g 0: OFF) */
+void scr_mfx(mono_t *m, int g, int track, const uint8_t *type, const uint8_t *byp, int sel, int page, int npages,
+             const char *const *lab, const char (*val)[12], const int *has);
+/* PROJECTS: the open project (num of n), its name, its colour (0 none), the projects used */
+void scr_projects(mono_t *m, int num, int n, const char *name, int colour, int used);
 /* Session's page belt: the pages as boxes on a belt, the chosen one large, its name under it */
-void scr_belt(mono_t *m, const char *const *names, int n, int sel);
+void scr_belt(mono_t *m, const char *const *names, int n, int sel, int from, int t);   /* (t 0..1000 moving from from;
+                                                         * < 0 or 1000: settled) */
 /* Session's ARRANGE: eight positions from first, each its scene (0: END) and repeats, the playing one filled */
 void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, int prog);
 

@@ -1,0 +1,20 @@
+# a finger on the wheel: the knobs turned keep the all-eight view (no pop-up)
+tap 85                   # out of the title
+wait 300
+cc 42 127                # TRIG / SOUND
+cc 42 0
+wait 1500
+note 9 100               # the wheel touched; knob 2 touched and turned
+wait 50
+note 1 100
+cc 72 8
+wait 100
+shot 01-eight-while-turning
+note 1 0
+note 9 0
+wait 100
+note 1 100               # the wheel let go: knob 2 turned: its pop-up
+cc 72 8
+wait 100
+shot 02-popup
+note 1 0

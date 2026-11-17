@@ -1098,6 +1098,19 @@ void qd_app_block_begin(qd_app_t *a)
     for (i = 0; i < QD_NTRACK; i++) {
         ow[i]->defer_off = 1;                           /* (the voices write nothing of their owner's) */
         a->blk_mt[i] = a->model.t[i].mix;
+        if (a->thr[i]) {                                /* (the Move's throws: those sends fully on, for this block) */
+            qd_mix_track_t *mt = &a->blk_mt[i];
+            int k;
+            if (a->thr[i] & 1u) mt->chorus = 127;
+            if (a->thr[i] & 2u) mt->delay = 127;
+            if (a->thr[i] & 4u) mt->reverb = 127;
+            for (k = 0; k < QD_NROOM; k++)
+                if (a->thr[i] >> (3 + k) & 1u) {        /* (a room fully on: the track heard only through it) */
+                    mt->room[k] = 127;
+                    mt->g_room[k] = (int16_t)(4096 >> mt->room_sh);
+                    mt->g_lvl = 0;
+                }
+        }
     }
     a->pool.halves = 1;
     qd_mix_begin(&a->mix, &a->pool, ow, QD_NTRACK);

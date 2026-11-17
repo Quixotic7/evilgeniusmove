@@ -39,7 +39,12 @@
 #pragma once
 #include <stdint.h>
 
+#include <stddef.h>
+
 #include "../seq/pattern.h"
+
+/* the fourth region: the project's MIDI FX groups, and the Move's scenes' settings and song after them (pattern.h) */
+#define QD_UNDO_R3 (offsetof(qd_project_t, song) + sizeof(((qd_project_t *)0)->song) - offsetof(qd_project_t, mfx))
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,7 +95,7 @@ typedef struct {
     uint8_t hold;                      /* T1: the gesture is held open (TOOLS' live change: QD_UNDO_QUIET_MS does not
                                         * close it; closing it lets go) */
 #ifndef QD_UNDO_SLOTS
-    qd_mfx_group_t mfx0[QD_MFX_NGROUP];   /* P1.6c: the MIDI FX groups (a fourth region) */
+    uint8_t mfx0[QD_UNDO_R3];          /* P1.6c: the MIDI FX groups (a fourth region; the Move: the scenes, the song) */
     uint8_t xl[QD_UNDO_XLOCKS * 5];    /* P1.5w: the other patterns' locks cleared (pattern, track, step, number, ovr) */
 #endif
     uint32_t xl_n;

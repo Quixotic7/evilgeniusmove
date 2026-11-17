@@ -1,0 +1,22 @@
+# Menu: Sequence and Session each come back in the mode they were left in
+tap 85                   # out of the title
+wait 300
+cc 41 127                # Sequence: FX (track button 3)
+cc 41 0
+wait 200
+state seq-fx
+cc 50 127                # Session: CLIPS; track button 4: MIX
+cc 50 0
+wait 100
+cc 40 127
+cc 40 0
+wait 200
+state sess-mix
+cc 50 127                # Sequence again: FX
+cc 50 0
+wait 300
+state back-seq-fx
+cc 50 127                # Session again: MIX
+cc 50 0
+wait 300
+state back-sess-mix

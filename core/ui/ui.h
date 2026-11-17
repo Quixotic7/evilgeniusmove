@@ -12,7 +12,11 @@
 #include "../qd_config.h"
 
 #define UI_NTRACK QD_TRACKS              /* the tracks the screens show (qd_config.h) */
+#ifdef QD_HOST
+#define UI_NPROJ 32                     /* the projects the screens show (persist.h QD_NPROJ: the Move's 32) */
+#else
 #define UI_NPROJ (QD_STORE_BLE ? 4 : 8)  /* the projects the screens show (persist.h QD_NPROJ: the Bluetooth store 4) */
+#endif
 
 #ifdef __cplusplus
 extern "C" {

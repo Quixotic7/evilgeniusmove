@@ -1,0 +1,14 @@
+# the main volume turned: its popup (Session too)
+tap 85                   # out of the title
+wait 1200
+cc 79 4                  # Volume down
+cc 79 124
+cc 79 124
+wait 100
+shot 01-volume
+cc 50 127                # Session: again
+cc 50 0
+wait 1200
+cc 79 4
+wait 100
+shot 02-volume-session

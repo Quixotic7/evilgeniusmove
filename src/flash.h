@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include "store.h"
 
-#define EGM_FLASH_SIZE 0x100000u        /* the host profile's image: persist.h QD_FLASH_PRJ + its sectors */
+#define EGM_FLASH_SIZE 0x400000u        /* the host profile's image: persist.h QD_FLASH_PRJ + its sectors */
 
 const qd_flash_t *flash_open(const char *path);         /* path 0: RAM only */
 void flash_poll(uint32_t now_ms);                       /* writes the file when changed and quiet for 2 s */

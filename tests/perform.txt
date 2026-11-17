@@ -1,0 +1,67 @@
+# FX's PERFORM (pad 8): throws (row 3 from the bottom), beat repeat (row 2), filter sweeps and tape (row 1)
+tap 85                   # out of the title
+wait 300
+tap 85                   # PLAY
+wait 600
+cc 41 127                # Sequence: FX (track button 3); pad 8: PERFORM
+cc 41 0
+wait 200
+note 99 100
+wait 30
+note 99 0
+wait 100
+state perform
+note 84 100              # CHORUS thrown (held): track 1's chorus fully on
+wait 200
+state throw
+shot 01-throw
+note 84 0
+wait 100
+state throw-off
+note 85 100              # ECHO twice: latched
+wait 30
+note 85 0
+wait 60
+note 85 100
+wait 30
+note 85 0
+wait 100
+state echo-latched
+note 76 100              # REPEAT 1/4 held
+wait 300
+state repeat
+shot 02-repeat
+note 76 0
+wait 100
+state repeat-off
+note 72 100              # TAPE STOP held
+wait 300
+state tape
+note 72 0
+wait 100
+note 69 100              # LP 2 held: the cutoff sweeps down
+wait 400
+state lp2
+note 69 0
+wait 800
+state lp-open
+note 99 100              # pad 8 again: PERFORM off, all let go
+wait 30
+note 99 0
+wait 100
+state off
+cc 50 127                # Session: throws on every track
+cc 50 0
+cc 42 127
+cc 42 0
+wait 200
+cc 41 127
+cc 41 0
+wait 200
+note 99 100
+wait 30
+note 99 0
+note 84 100
+wait 200
+state session-throw
+note 84 0

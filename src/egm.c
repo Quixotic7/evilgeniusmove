@@ -18,6 +18,7 @@
  *                         entered with its name, the wheel touched with all eight
  *
  * The core's ui state (the latch, the page) says which of these modes is up, so the two never disagree. */
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,8 @@
 #include "flash.h"
 #include "mono.h"
 #include "screens.h"
+#include "perform.h"
+#include "names.h"
 
 void qd_view_edit(qd_app_t *a, ui_held_t *h, ui_lane_t *l);
 void qd_view_browse(const qd_app_t *a, ui_browse_t *v);        /* .. the preset browser's */    /* view.c: the EDIT view's records (the room's lane) */
@@ -43,7 +46,7 @@ void qd_view_browse(const qd_app_t *a, ui_browse_t *v);        /* .. the preset 
 enum { N_KNOB_TOUCH0 = 0, N_VOL_TOUCH = 8, N_JOG_TOUCH = 9, N_STEP0 = 16, N_PAD0 = 68 };
 enum { CC_JOG_CLICK = 3, CC_JOG = 14, CC_TRACK4 = 40, CC_TRACK1 = 43, CC_SHIFT = 49, CC_MENU = 50, CC_BACK = 51,
        CC_CAPTURE = 52, CC_DOWN = 54, CC_UP = 55, CC_UNDO = 56, CC_LOOP = 58, CC_COPY = 60, CC_LEFT = 62, CC_RIGHT = 63,
-       CC_KNOB1 = 71, CC_VOLUME = 79, CC_PLAY = 85, CC_REC = 86, CC_MUTE = 88, CC_SAMPLE = 118, CC_DELETE = 119 };
+       CC_STEP_ICON0 = 16, CC_KNOB1 = 71, CC_VOLUME = 79, CC_PLAY = 85, CC_REC = 86, CC_MUTE = 88, CC_SAMPLE = 118, CC_DELETE = 119 };
 /* the LED palette's entries used (schwung src/shared/constants.mjs) */
 enum { C_OFF = 0, C_GREY = 119, C_LGREY = 118, C_WHITE = 120, C_DKBLUE = 97, C_BLUE = 17, C_LTBLUE = 48, C_DKGREEN = 83,
        C_GREEN = 126, C_RED = 127, C_YELLOW = 8, C_DKYELLOW = 73 };
@@ -52,7 +55,7 @@ enum { C_OFF = 0, C_GREY = 119, C_LGREY = 118, C_WHITE = 120, C_DKBLUE = 97, C_B
 enum { B_FX, B_SEL, B_ENV, B_LFO, B_EDIT, B_GLO, B_HOME, B_SAVE, B_ARP, B_SEQ, B_PLAY, B_REC, B_OCTDN, B_OCTUP };
 
 enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_BROWSE, MV_CORE };
-enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER };  /* a page of the Move's own over whatever is up */
+enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER, OV_PROJECTS };  /* a page of the Move's own over whatever is up */
 
 /* Shift + a step button: the Move's own shortcuts, by the icons printed under the steps (0: none there) */
 enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_NEWCLIP, SS_DOUBLE };
@@ -87,8 +90,9 @@ enum { SQ_TRACKS, SQ_SOUND, SQ_FX, SQ_TOOLS, SQ_N };
 static const char *const SQ_NAME[SQ_N] = { "TRACKS", "SOUND", "FX", "TOOLS" };
 /* Session's four modes (Menu: Sequence <-> Session): CLIPS (the pads the clips, 8 tracks x 4 slots), MIDI FX, FX on
  * the mix, MIX. A clip is a pattern's part of a track (the core's clips, seq.h): slot k is pattern k */
-enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_SCENES, SN_ARRANGE, SN_N };   /* (the four track buttons', then the belt's) */
-static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX", "SCENES", "ARRANGE" };
+enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_SCENES, SN_ARRANGE, SN_SEQ, SN_N };   /* (the four track buttons', then the
+                                                         * belt's) */
+static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX", "SCENES", "ARRANGE", "SEQ" };
 #define NSLOT 16                       /* clip slots a track (A01..A16) */
 #define LAUNCH_Q (A.proj.launch)       /* a clip launched or stopped: the project's launch quantize */
 /* the launch quantize as Shift + the wheel turns it in CLIPS: now (a 16th), a beat, 1, 2, 4, 8 bars, the clip's end */
@@ -111,6 +115,7 @@ enum { TS_VOL, TS_PAN, TS_CHORUS, TS_ECHO, TS_ROOM, TS_CRUSH, TS_ROBOT, TS_WARP,
 static const char *const TS_NAME[TS_N] = { "VOLUME", "PAN", "CHORUS", "ECHO", "ROOM", "CRUSH", "ROBOT", "WARP", "GLITCH", "TV" };
 #define KI_MICRO 10                    /* knob_info's ids past the eight knobs: a held step's micro and velocity .. */
 #define KI_VEL 11
+#define KI_MASTER 12                   /* .. the main volume */
 #define KI_TRACK 20                    /* .. a held track pad's VOLUME .. TV (20 + TS_*) */
 
 /* ------------------------------------------------------------------ the pages --- */
@@ -231,7 +236,15 @@ static struct {
     int8_t grp_last[6];                /* TRIG / SOUND: the page each page pad showed last */
     /* Session (Menu): the track buttons are its four modes; CLIPS: the pads the clips, 8 tracks x 4 slots from srow,
      * the step buttons in pairs under each track (stop, mute) */
+    int jog_touch;                     /* a finger on the wheel (whatever else is touched) */
+    unsigned mk_touch, mk_turned;      /* Mute held: the knobs touched (bit n), and turned since (their volume, no mute) */
+    /* PROJECTS (Shift + step 1): a project taken by Copy (-1), one armed by Delete (-1); the name ideas knob 1 turns */
+    int pj_take, pj_del, pj_nidea, pj_idea;
+    char pj_ideas[16][QD_NAME_MAX + 1];
+    int mod_hold, mod_used;            /* TRIG / SOUND: ENV (4) or LFO (5) held (-1 none), a knob turned meanwhile .. */
+    char mod_name[16], mod_val[16];    /* .. what the turn mapped (the knob's popup while held) */
     int session, sn_mode, srow;
+    int sn_keep, seq_keep;             /* each view's mode when it was left (Menu brings it back) */
     int8_t tsel[8];                    /* a slot chosen on a track with no clip there (-1: the one playing or queued) */
     uint32_t cl_tap_ms[32];            /* each clip pad's last tap (two: its track stopped) */
     int cl_take;                       /* Copy / Delete + a clip: the one taken (track * NSLOT + slot; -1 none) .. */
@@ -239,6 +252,11 @@ static struct {
     uint32_t left_ms;                  /* Left's last tap in CLIPS (two: back to the first slots) */
     int copy_used;                     /* Copy held and a clip tapped (released alone: the clip duplicated) */
     int mix_k;                         /* Session's MIX: what the knobs and the pad columns set (TS_*) */
+    int mix_hide;                      /* .. its top row hidden (button 4 again): all four rows the columns */
+    int8_t mxg_row[8];                 /* .. each column's pad held (its row; -1 none): the value glides to its height .. */
+    uint8_t mxg_pres[8];               /* .. as fast as the pad is pressed (its velocity, then its aftertouch) */
+    float mxg_v[8];
+    uint32_t mxg_ms;
     int mfx_pad, mfx_dbl;              /* the MIDI FX page: a slot pad held (-1 none); a double tap's release to eat */
     uint32_t mfx_tap_ms[8];            /* .. each slot pad's last tap (two: the slot bypassed) */
     uint32_t mx_tap_ms[24];            /* .. each column pad's last tap (two: the default) */
@@ -246,6 +264,15 @@ static struct {
     int proj_seen;                     /* the project the clips were last looked at in */
     /* Session's page belt (the wheel in CLIPS and MIX): open, the page chosen */
     int belt, belt_sel;
+    int belt_from;                     /* .. the page it moved from, when (its motion) */
+    uint32_t belt_ms;
+    int seqp;                          /* SEQ: its subpage (TIME, REC, CLOCK) */
+    /* FX's PERFORM (pad 8): the 24 pads below are performance pads; each held, latched (two taps), its last tap, when
+     * it was last pressed (the newest of a kind wins), the one pressed last (the screen) */
+    int perform;
+    uint8_t pf_held[24], pf_latch[24];
+    uint32_t pf_tap_ms[24], pf_t[24], pf_ctr;
+    int pf_last;
     /* SCENES: the scene edited; ARRANGE: the positions shown (8 a page) */
     int scn, apage;
     /* the scene running (a scene launched, by hand, by a follow action or by the song; -1 none): from tick run_x to
@@ -307,13 +334,24 @@ static void fx_view(int core_page, ui_fx_t *v)
     A.ui.fx_page = keep;
 }
 
-/* an FX floor's value i: its page in the core and the knob there; 0: none */
+/* an FX floor's value i: its page in the core and the knob there; 0: none. Every effect's floor has the selected
+ * track's send into it on knob 8 (its own values on 1..7: the first page's three, the second page's four); SENDS, all
+ * sends, as it is */
 static int fx_ent(int i, int *page, int *k)
 {
     const fpage_t *f = &FXP[S.fpage];
-    *page = i < 4 ? f->a : f->b;
-    *k = i & 3;
-    return i < 8 && *page >= 0;
+    if (i < 0 || i >= 8)
+        return 0;
+    if (S.fpage == 0) {
+        *page = i < 4 ? f->a : f->b;
+        *k = i & 3;
+    } else if (i < 3)
+        *page = f->a, *k = i;
+    else if (i < 7)
+        *page = f->b, *k = i - 3;
+    else
+        *page = f->a, *k = 3;                           /* (the core's knob 4 on an effect page: its send) */
+    return *page >= 0;
 }
 
 static int mix_native(void) { return S.mode == MV_MIX && A.ui.mix_page % QD_MIX_NPAGE == 0; }
@@ -324,10 +362,48 @@ static int scn_on(void);
 static int arr_on(void);
 static void scn_val(int i, char *v, int cap, int *frac, int brief);
 static const char *const SCN_LAB[8];
+static int sq_on(void);
+static void sq_val(int i, char *v, int cap, int *frac);
+static int seqp_lab_ok(int i);
+static const char *seqp_lab(int i);
 static void knob_info(int i, kinfo_t *o)
 {
     memset(o, 0, sizeof *o);
     o->frac = -1;
+    if (S.mute_down && i >= 0 && i < 8) {               /* Mute held: knob i track i's volume, once turned */
+        if (i < QD_TRACKS && (S.mk_turned >> i & 1u)) {
+            const int v = A.model.t[i].mix.level;
+            snprintf(o->name, sizeof o->name, "T%d VOLUME", i + 1);
+            snprintf(o->val, sizeof o->val, "%d", v);
+            o->frac = v * 1000 / 127;
+            o->ok = 1;
+        }
+        return;
+    }
+    if (S.over == OV_PROJECTS && (i == 0 || i == 1)) {  /* PROJECTS: the open one's name, colour */
+        const int p = A.per.proj, c = A.per.pcol[p];
+        snprintf(o->name, sizeof o->name, i ? "COLOUR" : "NAME");
+        if (i)
+            snprintf(o->val, sizeof o->val, c ? "T%d" : "NONE", c);
+        else
+            snprintf(o->val, sizeof o->val, "%.12s", A.per.pname[p]);
+        o->ok = 1;
+        return;
+    }
+    if (S.mode == MV_SOUND && S.mod_hold >= 0 && S.mod_used && S.mod_name[0]) {   /* ENV / LFO held: the mapping */
+        snprintf(o->name, sizeof o->name, "%s", S.mod_name);
+        snprintf(o->val, sizeof o->val, "%s", S.mod_val);
+        o->ok = 1;
+        return;
+    }
+    if (i >= 0 && i < 8 && sq_on()) {                   /* SEQ: the subpage's settings */
+        if (seqp_lab_ok(i)) {
+            snprintf(o->name, sizeof o->name, "%s", seqp_lab(i));
+            sq_val(i, o->val, sizeof o->val, &o->frac);
+            o->ok = 1;
+        }
+        return;
+    }
     if (i >= 0 && i < 8 && scn_on()) {                  /* SCENES: the edited scene's eight */
         snprintf(o->name, sizeof o->name, "S%d %s", S.scn + 1, SCN_LAB[i]);
         scn_val(i, o->val, sizeof o->val, &o->frac, 0);
@@ -379,6 +455,13 @@ static void knob_info(int i, kinfo_t *o)
             snprintf(o->val, sizeof o->val, "%d", v);
             o->frac = v * 1000 / 127;
         }
+        o->ok = 1;
+        return;
+    }
+    if (i == KI_MASTER) {                               /* the main volume, as it is turned */
+        snprintf(o->name, sizeof o->name, "VOLUME");
+        snprintf(o->val, sizeof o->val, "%d%%", S.pot * 100 / 1023);
+        o->frac = S.pot * 1000 / 1023;
         o->ok = 1;
         return;
     }
@@ -980,6 +1063,75 @@ static void clip_follow(void)
     }
 }
 
+/* ------------------------------------------------------------------ PERFORM --- */
+/* FX's pad 8: the rows below are performance pads (design/WORKFLOW.md "FX mode and PERFORM"). Row 3 (from the top
+ * row's: pads 17-24 here) throws CHORUS .. TV fully on (Sequence: the selected track's sends; Session: every track's);
+ * row 2 beat repeat 1/4 .. 1/32T; row 1 the filter sweeps LP 1, LP 2, HP 1, HP 2 and the tape STOP, HALF, REV,
+ * SCRATCH (on the whole mix: perform.c). Held: on while held; two taps: latched (a tap: off). Of a kind, the newest
+ * pressed wins */
+static const char *const PF_NAME[24] = {
+    "LP 1", "LP 2", "HP 1", "HP 2", "TAPE STOP", "HALF SPEED", "REVERSE", "SCRATCH",
+    "REPEAT 1/4", "REPEAT 1/4T", "REPEAT 1/8", "REPEAT 1/8T", "REPEAT 1/16", "REPEAT 1/16T", "REPEAT 1/32", "REPEAT 1/32T",
+    "CHORUS", "ECHO", "ROOM", "CRUSH", "ROBOT", "WARP", "GLITCH", "TV" };
+
+static int pf_on(int i) { return S.pf_held[i] || S.pf_latch[i]; }
+
+static int pf_newest(int lo, int hi)                    /* the newest pressed of pads lo .. hi - 1 that is on (-1) */
+{
+    int i, b = -1;
+    for (i = lo; i < hi; i++)
+        if (pf_on(i) && (b < 0 || S.pf_t[i] > S.pf_t[b]))
+            b = i;
+    return b;
+}
+
+/* each look: the throws into the core (app.h thr), the rest to perform.c */
+static void pf_sync(void)
+{
+    int t, k;
+    uint8_t thr = 0;
+    if (S.mode != MV_FX)                                /* (held pads let go elsewhere: not held any more) */
+        memset(S.pf_held, 0, sizeof S.pf_held);
+    for (k = 0; k < 8; k++)
+        if (pf_on(16 + k))
+            thr |= (uint8_t)(1u << k);
+    for (t = 0; t < QD_NTRACK; t++)
+        A.thr[t] = (uint8_t)(t < QD_TRACKS && (S.session || t == A.sel) ? thr : 0);
+    {
+        const int rp = pf_newest(8, 16), fl = pf_newest(0, 4), tp = pf_newest(4, 8);
+        pf_set(rp < 0 ? -1 : rp - 8, fl, tp < 0 ? -1 : tp - 4, A.bpm);
+    }
+}
+
+static void pf_pad(int idx, int down)
+{
+    if (idx < 0 || idx >= 24)
+        return;
+    if (!down) {
+        S.pf_held[idx] = 0;
+        return;
+    }
+    if (S.pf_latch[idx])                                /* latched: a tap lets it go (on while held) */
+        S.pf_latch[idx] = 0;
+    else if (S.pf_tap_ms[idx] && S.now - S.pf_tap_ms[idx] < DOUBLE_MS) {
+        S.pf_latch[idx] = 1;                            /* two taps: latched */
+        show_name("LATCHED");
+    }
+    else
+        S.name_until = S.now;                           /* (a name showing gives way to the pad's picture) */
+    S.pf_tap_ms[idx] = S.now ? S.now : 1;
+    S.pf_held[idx] = 1;
+    S.pf_t[idx] = ++S.pf_ctr;
+    S.pf_last = idx;
+}
+
+static void pf_off(void)                                /* PERFORM left: everything let go */
+{
+    memset(S.pf_held, 0, sizeof S.pf_held);
+    memset(S.pf_latch, 0, sizeof S.pf_latch);
+    S.perform = 0;
+}
+
 /* ------------------------------------------------------------------ SCENES and ARRANGE --- */
 /* A scene is slot k on every track (pattern k). Launched (Shift + a clip row, a step in SCENES or ARRANGE, the wheel
  * pressed in SCENES) it starts on every track at one point, its launch quantize's (its own, else the project's), at its
@@ -988,6 +1140,8 @@ static void clip_follow(void)
  * to the first END; while it plays, follow actions wait. What follows is decided a bar ahead and launched exactly at the
  * point (qd_seq_launch_at) */
 #define BAR_TICKS (16 * (int64_t)QD_TPS)
+static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+#define BELT_MS 180u                                    /* the belt's move from a page to the next (the board's frame) */
 static const char *const SCN_FOLLOW[QD_NFOLLOW] = { "NONE", "NEXT", "PREVIOUS", "FIRST", "ANY", "OTHER" };
 static const char *const SCN_FOLLOW3[QD_NFOLLOW] = { "OFF", "NXT", "PRV", "1ST", "ANY", "OTH" };   /* (the all-eight) */
 #define NSCN_NAME 16                                    /* the names a scene can take (0: none, SCENE n) */
@@ -1004,6 +1158,89 @@ static const char *const SCN_LAUNCH3[8] = { "PRJ", "NOW", "BT", "1B", "2B", "4B"
 
 static int scn_on(void) { return S.session && S.sn_mode == SN_SCENES && S.mode == MV_HOME && !S.over; }
 static int arr_on(void) { return S.session && S.sn_mode == SN_ARRANGE && S.mode == MV_HOME && !S.over; }
+static int sq_on(void) { return S.session && S.sn_mode == SN_SEQ && S.mode == MV_HOME && !S.over; }
+
+/* SEQ: the sequencer's settings on three subpages (the wheel): TIME (tempo, swing, launch quantize, the metronome and
+ * its click), REC (the record mode, quantize, take, automation), CLOCK (clock out, CC out; a clock in is followed
+ * whenever one comes). No count-in: the core has none yet */
+enum { SQP_TIME, SQP_REC, SQP_CLOCK, SQP_N };
+static const char *const SQP_NAME[SQP_N] = { "TIME", "REC", "CLOCK" };
+static const char *const SQP_LAB[SQP_N][8] = {
+    { "TEMPO", "SWING", "LAUNCH", "METRO", "CLICK", "", "", "" },
+    { "MODE", "QUANT", "TAKE", "AUTO", "", "", "", "" },
+    { "CLK OUT", "CC OUT", "", "", "", "", "", "" },
+};
+static void sq_knob(int i, int d)
+{
+    int k;
+    if (S.seqp == SQP_TIME) {
+        switch (i) {
+        case 0: qd_ctl_set_tempo(&A, clamp(qd_seq_bpm(&A.seq) + d, QD_BPM_MIN, QD_BPM_MAX)); break;
+        case 1: {                                       /* (the project's: every pattern's, as one) */
+            const int sw = clamp(qd_proj_cpat(&A.proj, A.seq.cur)->swing + d, 50, 80);
+            for (k = 0; k < QD_NSCENE; k++)
+                qd_proj_pat(&A.proj, k)->swing = (uint8_t)sw;
+            break;
+        }
+        case 2:
+            for (k = 0; k < (int)sizeof LAUNCH_ORDER && LAUNCH_ORDER[k] != A.proj.launch; k++)
+                ;
+            A.proj.launch = LAUNCH_ORDER[clamp((k < (int)sizeof LAUNCH_ORDER ? k : 2) + d, 0, (int)sizeof LAUNCH_ORDER - 1)];
+            break;
+        case 3: A.metro = d > 0; break;
+        case 4: A.metro_lvl = clamp(A.metro_lvl + d * 5, 0, 100); break;
+        }
+    } else if (S.seqp == SQP_REC) {
+        switch (i) {
+        case 0: A.proj.rec_mode = d > 0; break;
+        case 1: A.proj.rec_quant = (uint8_t)clamp(A.proj.rec_quant + d * 5, 0, 100); break;
+        case 2: A.proj.rec_dub = d > 0 ? QD_TAKE_REPLACE : QD_TAKE_OVERDUB; break;
+        case 3: A.proj.rec_auto = d > 0; break;
+        }
+    } else {
+        if (i == 0)
+            A.ui.clk_out = d > 0;
+        else if (i == 1)
+            A.ui.cc_out = d > 0;
+    }
+}
+static int seqp_lab_ok(int i) { return SQP_LAB[S.seqp][i][0] != 0; }
+static const char *seqp_lab(int i) { return SQP_LAB[S.seqp][i]; }
+static void sq_val(int i, char *v, int cap, int *frac)
+{
+    int k;
+    *frac = -1;
+    v[0] = 0;
+    if (S.seqp == SQP_TIME) {
+        switch (i) {
+        case 0: {
+            const int b = qd_seq_bpm(&A.seq);
+            snprintf(v, (size_t)cap, "%d", b), *frac = (b - QD_BPM_MIN) * 1000 / (QD_BPM_MAX - QD_BPM_MIN);
+            break;
+        }
+        case 1: {
+            const int sw = qd_proj_cpat(&A.proj, A.seq.cur)->swing;
+            snprintf(v, (size_t)cap, "%d", sw), *frac = (sw - 50) * 1000 / 30;
+            break;
+        }
+        case 2:
+            for (k = 0; k < 8 && SCN_LAUNCH[k] != A.proj.launch; k++)
+                ;
+            snprintf(v, (size_t)cap, "%s", SCN_LAUNCH3[k < 8 ? k : 3]);
+            break;
+        case 3: snprintf(v, (size_t)cap, A.metro ? "ON" : "OFF"); break;
+        case 4: snprintf(v, (size_t)cap, "%d", A.metro_lvl), *frac = A.metro_lvl * 10; break;
+        }
+    } else if (S.seqp == SQP_REC) {
+        switch (i) {
+        case 0: snprintf(v, (size_t)cap, A.proj.rec_mode ? "STP" : "LIV"); break;
+        case 1: snprintf(v, (size_t)cap, "%d", A.proj.rec_quant), *frac = A.proj.rec_quant * 10; break;
+        case 2: snprintf(v, (size_t)cap, A.proj.rec_dub == QD_TAKE_REPLACE ? "REP" : "DUB"); break;
+        case 3: snprintf(v, (size_t)cap, A.proj.rec_auto ? "ON" : "OFF"); break;
+        }
+    } else if (i < 2)
+        snprintf(v, (size_t)cap, (i ? A.ui.cc_out : A.ui.clk_out) ? "ON" : "OFF");
+}
 
 static int scene_used(int k)                            /* a clip in slot k on any track */
 {
@@ -1206,7 +1443,6 @@ static void scene_run(void)
     }
 }
 
-static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 /* SCENES' knob i: the edited scene's settings */
 static void scn_knob(int i, int d)
@@ -1328,6 +1564,11 @@ static void sess_button(int n, int down)
         return;
     }
     S.belt = 0;
+    if (n == SN_MIX && mix_on()) {                      /* MIX again: its top row hidden / shown */
+        S.mix_hide = !S.mix_hide;
+        show_name(S.mix_hide ? "MIX: 4 ROWS" : "MIX");
+        return;
+    }
     S.tb_down = n;                                      /* (held: button 2 + the wheel, the MIDI FX group) */
     S.tb_ms = S.now ? S.now : 1;
     S.sn_mode = n;
@@ -1343,17 +1584,29 @@ static void sess_button(int n, int down)
     show_name(SN_NAME[n]);
 }
 
-static void sess_toggle(void)                           /* Menu: Sequence <-> Session */
+static void sess_toggle(void)                           /* Menu: Sequence <-> Session, each back in its own last mode */
 {
+    if (S.session)
+        S.sn_keep = S.sn_mode;
+    else
+        S.seq_keep = S.seq_mode;
     S.session = !S.session;
     S.belt = 0;
     S.top_hidden = 0;
     S.page_latch = 0;
-    seq_go(SQ_TRACKS);
-    if (S.session)
-        S.sn_mode = SN_CLIPS;
-    else
-        S.seq_mode = SQ_TRACKS;
+    if (S.session) {
+        const int n = S.sn_keep;
+        if (n < SN_SCENES) {                            /* (the track buttons' four: as tapped) */
+            sess_button(n, 1);
+            sess_button(n, 0);
+        } else {
+            S.sn_mode = n;
+            seq_go(SQ_TRACKS);
+        }
+    } else {
+        S.seq_mode = S.seq_keep;
+        seq_go(S.seq_keep);
+    }
     show_name(S.session ? "SESSION" : "SEQUENCE");
 }
 
@@ -1371,6 +1624,8 @@ static void belt_enter(void)
     seq_go(SQ_TRACKS);
     if (n == SN_SCENES)
         scene_say();
+    else if (n == SN_SEQ)
+        show_name(SQP_NAME[S.seqp]);
     else
         show_name(SN_NAME[n]);
 }
@@ -1443,29 +1698,57 @@ static void mix_set(int t, int k, int v)            /* .. set (the model's mix: 
     }
 }
 
-static void mix_say(int t)
-{
-    char v[24];
-    const int x = mix_val(t, S.mix_k);
-    if (S.mix_k == TS_PAN)
-        snprintf(v, sizeof v, "%d PAN %s%d", t + 1, x < 0 ? "L" : x > 0 ? "R" : "C", x < 0 ? -x : x);
-    else
-        snprintf(v, sizeof v, "%d %s %d", t + 1, TS_NAME[S.mix_k], x);
-    show_name(v);
-}
-
 /* the pads in MIX: the top row what is set (pad 8: WARP, GLITCH, TV in turn); the three rows below a column a track,
  * tapped at a height: the value there (a third, two thirds, full; PAN: left, centre, right; the lowest tapped again at
  * its height: 0), two taps: the default; Mute held: the track muted */
-static void mix_pad(int idx, int down)
+static int mix_rows(void) { return S.mix_hide ? 4 : 3; }   /* the rows of columns */
+static int mix_target(int row)                          /* a row's value: the bottom 0 (PAN: left), the top 127 (right) */
+{
+    const int nr = mix_rows() - 1;
+    return S.mix_k == TS_PAN ? -64 + (row * 127 + nr / 2) / nr : (row * 127 + nr / 2) / nr;
+}
+
+/* each look: a column's pad held glides its value to the pad's height, a light touch slowly (about 20 s across), a
+ * hard press quickly (about 0.2 s) */
+static void mix_glide(void)
+{
+    const uint32_t dt = S.mxg_ms ? S.now - S.mxg_ms : 0;
+    int c;
+    S.mxg_ms = S.now ? S.now : 1;
+    if (!mix_on())
+        memset(S.mxg_row, -1, sizeof S.mxg_row);
+    for (c = 0; c < 8 && c < QD_TRACKS; c++) {
+        float to, rate, step;
+        if (S.mxg_row[c] < 0 || !dt)
+            continue;
+        to = (float)mix_target(S.mxg_row[c]);
+        rate = 6.0f * powf(2.0f, S.mxg_pres[c] / 18.0f);   /* (values a second: 6 .. 768) */
+        step = rate * (float)(dt > 100 ? 100 : dt) / 1000.0f;
+        S.mxg_v[c] = S.mxg_v[c] < to ? (S.mxg_v[c] + step > to ? to : S.mxg_v[c] + step)
+                                     : (S.mxg_v[c] - step < to ? to : S.mxg_v[c] - step);
+        if ((int)lrintf(S.mxg_v[c]) != mix_val(c, S.mix_k))
+            mix_set(c, S.mix_k, (int)lrintf(S.mxg_v[c]));
+    }
+}
+
+static void mix_pressure(int idx, int p)                /* a column's pad pressed harder or lighter */
+{
+    const int c = idx % 8, row = idx / 8;
+    if (idx >= 0 && idx < 32 && c < 8 && S.mxg_row[c] == row)
+        S.mxg_pres[c] = (uint8_t)(p < 0 ? 0 : p > 127 ? 127 : p);
+}
+
+static void mix_pad_v(int idx, int down, int vel)
 {
     const int c = idx % 8, row = idx / 8;
     if (!down) {
         if (S.pad_note[idx] >= 0)
             note_pad(idx, 0);
+        if (c < 8 && S.mxg_row[c] == row)
+            S.mxg_row[c] = -1;
         return;
     }
-    if (row == 3) {
+    if (row == 3 && !S.mix_hide) {
         S.mix_k = c < 7 ? c : S.mix_k >= TS_WARP && S.mix_k < TS_TV ? S.mix_k + 1 : TS_WARP;
         show_name(TS_NAME[S.mix_k]);
         return;
@@ -1478,30 +1761,27 @@ static void mix_pad(int idx, int down)
         return;
     }
     qd_ctl_select_track(&A, c);
-    if (S.mx_tap_ms[idx] && S.now - S.mx_tap_ms[idx] < DOUBLE_MS) {   /* two taps: the default */
+    if (S.shift) {                                      /* Shift: straight to this pad's height */
+        S.mxg_row[c] = -1;
+        mix_set(c, S.mix_k, mix_target(row));
+    } else if (S.mx_tap_ms[idx] && S.now - S.mx_tap_ms[idx] < DOUBLE_MS) {   /* two taps: the default, at once */
         S.mx_tap_ms[idx] = 0;
+        S.mxg_row[c] = -1;
         mix_set(c, S.mix_k, S.mix_k == TS_VOL ? QD_MIX_LEVEL_DEFAULT : 0);
-    } else {
-        int v;
+    } else {                                            /* held: the value glides to this pad's height */
         S.mx_tap_ms[idx] = S.now ? S.now : 1;
-        if (S.mix_k == TS_PAN)
-            v = row == 0 ? -64 : row == 1 ? 0 : 63;
-        else {
-            v = (row + 1) * 127 / 3;
-            if (row == 0 && mix_val(c, S.mix_k) > 0 && mix_val(c, S.mix_k) <= v)
-                v = 0;                                  /* (the lowest again: off) */
-        }
-        mix_set(c, S.mix_k, v);
-    }
-    mix_say(c);
+        S.mxg_row[c] = (int8_t)row;
+        S.mxg_pres[c] = (uint8_t)(vel > 127 ? 127 : vel);
+        S.mxg_v[c] = (float)mix_val(c, S.mix_k);
+    }                                                   /* (no popup: the screen's bars show it; the knobs keep theirs) */
 }
 
-static int mix_lit(int t, int row)                  /* a column's pad lit: up to the value (PAN: the one pad) */
+static int mix_lit(int t, int row)                  /* a column's pad lit: up to the value (PAN: the nearest pad) */
 {
-    const int v = mix_val(t, S.mix_k);
+    const int v = mix_val(t, S.mix_k), nr = mix_rows() - 1;
     if (S.mix_k == TS_PAN)
-        return row == (v < -21 ? 0 : v > 21 ? 2 : 1);
-    return v * 3 > row * 127;
+        return row == ((v + 64) * nr + 63) / 127;
+    return v > 0 && v * 2 * nr >= (2 * row - 1) * 127;
 }
 
 /* a held step's micro timing or velocity (the hold modes of the core's knob 1, as the home knobs) */
@@ -1515,13 +1795,62 @@ static void step_hold(int which, int d)
     S.turn_ms = S.now ? S.now : 1;
 }
 
+/* the mod matrix (design/WORKFLOW.md "Mod mapping"): ENV held: the envelope last chosen on its pad (ENV 1-3) is a
+ * modulation slot's source, knob i's value its destination, the turn its depth (the core's B1 hold-to-map); LFO held:
+ * the same with the LFO last chosen on its pad (a slot too: the LFO keeps its own destination; eight slots a sound).
+ * The popup: ENV2>CUTOFF +40; a value nothing can modulate: NO MOD */
+static void mod_map(int i, int d)
+{
+    const spage_t *sp = &SND[S.spage];
+    const int env = S.mod_hold == 4, n = env ? S.grp_last[4] - 6 : S.grp_last[5] - 14;
+    const int keep_pg = A.ui.snd_page, keep_lk = A.ui.snd_lk, keep_src = A.ui.mod_src;
+    char v[24];
+    int id, dest, dep = 0;
+    S.mod_used = 1;
+    if (n < 0 || n > 2)
+        return;
+    A.ui.snd_page = g_snd_core[S.spage][i];
+    id = qd_snd_ids(&A, A.ui.snd_page)[sp->e[i].k == 4 ? 4 : sp->e[i].k];
+    {
+        const int src = (env ? QD_MS_ENV1 : QD_MS_LFO1) + n;   /* (a slot either way: the LFO keeps its own DEST) */
+        A.ui.snd_lk = 4;
+        A.ui.mod_src = src;
+        A.ui.snd_lk_bad_ms = 0;
+        qd_app_knob(&A, sp->e[i].k == 4 ? QD_K_ALGO : QD_K_1 + sp->e[i].k, d);
+        dest = id >= 0 ? qd_quad_dest_of(id, 1) : -1;
+        if (dest >= 0 && !A.ui.snd_lk_bad_ms) {
+            const int slot = qd_snd_mod_slot_of(&A, src, dest);
+            dep = slot >= 0 ? A.model.t[A.sel].patch[QD_QP_MOD(slot, QD_QM_DEPTH)] : 0;
+        }
+    }
+    if (dest >= 0 && !A.ui.snd_lk_bad_ms) {
+        snprintf(S.mod_name, sizeof S.mod_name, "%s%d>%.10s", env ? "ENV" : "LFO", n + 1, qd_quad_dest_name(dest));
+        snprintf(S.mod_val, sizeof S.mod_val, "%+d", dep);
+    } else {
+        snprintf(S.mod_name, sizeof S.mod_name, "%s%d", env ? "ENV" : "LFO", n + 1);
+        snprintf(S.mod_val, sizeof S.mod_val, "NO MOD");
+    }
+    (void)v;
+    A.ui.snd_page = keep_pg, A.ui.snd_lk = keep_lk, A.ui.mod_src = keep_src;
+}
+
+static void pj_knob(int i, int d);
 static void knob(int i, int delta)
 {
     const int d = detents(i, delta, KNOB_DIV);
     S.touch_turned = 1;
     S.last_knob = i;
     S.turn_ms = S.now ? S.now : 1;
-    if (!d || S.over)
+    if (d && S.over == OV_PROJECTS) {                   /* PROJECTS: the open one's name, colour */
+        pj_knob(i, d);
+        return;
+    }
+    if (d && S.mute_down && i < QD_TRACKS) {            /* Mute held: knob i track i's volume (touched alone: its mute) */
+        S.mk_turned |= 1u << i;
+        track_mix_of(i, TS_VOL, d);
+        return;
+    }
+    if (!d || S.over || S.mute_down)
         return;
     if (S.tpad >= 0) {                                  /* a track pad held: knob i its send i */
         track_mix(TS_CHORUS + i, d);
@@ -1539,8 +1868,17 @@ static void knob(int i, int delta)
         arr_knob(i, d);
         return;
     }
+    if (sq_on()) {                                      /* SEQ: the subpage's settings */
+        sq_knob(i, d);
+        return;
+    }
     if (S.mode == MV_SOUND) {
         const spage_t *sp = &SND[S.spage];
+        if (i < sp->n && S.mod_hold >= 0) {             /* ENV / LFO held: knob i's value modulated by the one last
+                                                         * chosen on that pad, the turn its depth */
+            mod_map(i, d);
+            return;
+        }
         if (i < sp->n) {
             const int keep = A.ui.snd_page;
             A.ui.snd_page = g_snd_core[S.spage][i];
@@ -1590,7 +1928,10 @@ static void wheel(int delta)
     } else if (S.mode == MV_BROWSE) {                   /* the sounds: each one heard on the track as it comes up */
         qd_br_turn(&A, d);
     } else if (S.belt && S.session && S.mode == MV_HOME) {   /* the belt: the page chosen */
-        S.belt_sel = clamp(S.belt_sel + d, 0, SN_N - 1);
+        const int b = clamp(S.belt_sel + d, 0, SN_N - 1);
+        if (b != S.belt_sel)
+            S.belt_from = S.belt_sel, S.belt_ms = S.now ? S.now : 1;
+        S.belt_sel = b;
         S.name_until = S.now;                           /* (a name showing gives way to it) */
     } else if (clips_on() && S.shift) {                 /* CLIPS, Shift: the launch quantize */
         int i, k = 0;
@@ -1603,14 +1944,20 @@ static void wheel(int delta)
     } else if (scn_on()) {                              /* SCENES: the scene edited */
         S.scn = clamp(S.scn + d, 0, QD_NSCENE - 1);
         scene_say();
+    } else if (sq_on()) {                               /* SEQ: the subpage */
+        S.seqp = clamp(S.seqp + (d < 0 ? -1 : 1), 0, SQP_N - 1);
+        show_name(SQP_NAME[S.seqp]);
     } else if (arr_on()) {                              /* ARRANGE: the positions shown, eight a page */
         char v[20];
         S.apage = clamp(S.apage + (d < 0 ? -1 : 1), 0, QD_NSONG / 8 - 1);
         snprintf(v, sizeof v, "SONG %d-%d", S.apage * 8 + 1, S.apage * 8 + 8);
         show_name(v);
-    } else if (clips_on() || mix_on()) {                /* CLIPS, MIX: the page belt (Plus / Minus move the rows) */
+    } else if (mix_on()) {                              /* MIX: the wheel does nothing (Back leaves it) */
+    } else if (clips_on()) {                            /* CLIPS: the page belt (Plus / Minus move the rows) */
         S.belt = 1;
         S.name_until = S.now;
+        S.belt_from = S.sn_mode;
+        S.belt_ms = S.now ? S.now : 1;
         S.belt_sel = clamp(S.sn_mode + (d < 0 ? -1 : 1), 0, SN_N - 1);
     } else if (page_mode()) {                           /* the clip's length in pages: longer, the new pages in the
                                                          * loop; shorter, the pages past it out (muted pages stay) */
@@ -1718,6 +2065,104 @@ static void wheel_click(int down)
         btn(B_OCTUP, down);
 }
 
+/* ------------------------------------------------------------------ PROJECTS --- */
+/* Shift + step 1: the 32 projects on the pads, 1-8 the top row. A tap loads one (an empty pad: a new project there);
+ * Copy held + a project, then an empty pad: copied; Delete held + a project twice: deleted. Knob 1: the open project's
+ * name (the core's ideas for it), knob 2: its colour (a track's). Back, or Shift + step 1 again: closed */
+static int pj_at(int idx) { return (3 - idx / 8) * 8 + idx % 8; }
+
+static void pj_say(const char *what, int p)
+{
+    char v[20];
+    snprintf(v, sizeof v, "%s %d", what, p + 1);
+    show_name(v);
+}
+
+static void pj_open(void)
+{
+    int kind[16];
+    if (S.over == OV_PROJECTS) {
+        S.over = OV_NONE;
+        return;
+    }
+    S.over = OV_PROJECTS;
+    S.pj_take = S.pj_del = -1;
+    S.pj_nidea = qd_name_project_ideas(S.now ^ 0x5EED5u, A.per.pname[A.per.proj], S.pj_ideas, kind, 16);
+    S.pj_idea = 0;
+}
+
+static void pj_changed(void)                            /* (another project open: the Move's own state of the last one) */
+{
+    S.run = -1, S.song_on = 0;
+    S.pj_nidea = 0;
+}
+
+static void pj_pad(int idx, int down)
+{
+    const int p = pj_at(idx);
+    if (!down || p < 0 || p >= QD_NPROJ)
+        return;
+    if (S.copy_down) {                                  /* Copy: the project taken, then where it goes (an empty pad) */
+        S.copy_used = 1;
+        if (S.pj_take < 0) {
+            if (A.per.pexists[p])
+                S.pj_take = p, pj_say("COPY", p);
+        } else if (A.per.pexists[p])
+            show_name("NOT EMPTY");
+        else {
+            if (qd_proj_copy(&A, S.pj_take, p))
+                pj_say("COPIED TO", p);
+            S.pj_take = -1;
+        }
+        return;
+    }
+    if (S.delete_down) {                                /* Delete: armed, then deleted on the same pad */
+        if (!A.per.pexists[p])
+            return;
+        if (S.pj_del == p) {
+            S.pj_del = -1;
+            if (qd_proj_delete(&A, p)) {
+                pj_say("DELETED", p);
+                if (p == A.per.proj)
+                    pj_changed();
+            }
+        } else {
+            S.pj_del = p;
+            show_name("DELETE? AGAIN");
+        }
+        return;
+    }
+    S.pj_del = -1;
+    if (p == A.per.proj)
+        show_name(A.per.pname[p][0] ? A.per.pname[p] : "THIS ONE");
+    else if (A.per.pexists[p]) {
+        if (qd_proj_load(&A, p)) {
+            pj_changed();
+            show_name(A.per.pname[p][0] ? A.per.pname[p] : "LOADED");
+        }
+    } else if (qd_proj_new(&A, p)) {
+        pj_changed();
+        pj_say("NEW PROJECT", p);
+    }
+}
+
+static void pj_knob(int i, int d)
+{
+    const int p = A.per.proj;
+    if (i == 0) {                                       /* the name: the ideas for it */
+        if (!S.pj_nidea) {
+            int kind[16];
+            S.pj_nidea = qd_name_project_ideas(S.now ^ 0x5EED5u, A.per.pname[p], S.pj_ideas, kind, 16);
+            S.pj_idea = 0;
+        }
+        if (S.pj_nidea > 0) {
+            S.pj_idea = clamp(S.pj_idea + d, 0, S.pj_nidea - 1);
+            qd_proj_name(&A, p, S.pj_ideas[S.pj_idea]);
+        }
+    } else if (i == 1)                                  /* its colour */
+        qd_proj_colour(&A, p, clamp(A.per.pcol[p] + d, 0, 8));
+}
+
 /* Shift + a step: the Move's shortcut there */
 static void shift_step(int i)
 {
@@ -1727,7 +2172,7 @@ static void shift_step(int i)
     case SS_METRO: qd_shift_black(&A, 6); break;        /* (the core's SHIFT + B7, by name) */
     case SS_DOUBLE: qd_shift_black(&A, 8); break;       /* (SHIFT + B9) */
     case SS_NEWCLIP: new_clip(); break;
-    case SS_PROJECTS: qd_prj_button(&A); break;         /* (SHIFT + SAVE) */
+    case SS_PROJECTS: pj_open(); break;
     case SS_MIDIFX: tap(B_ARP); break;                  /* the MIDI FX page (the core's ARP, tapped) */
     default: break;
     }
@@ -1762,25 +2207,33 @@ static void note_pad(int idx, int vel)
     }
 }
 
+/* Mute held + a track's pad or knob: muted (again: heard); two taps, or Shift: soloed */
+static void mute_press(int t)
+{
+    if (t < 0 || t >= QD_TRACKS)
+        return;
+    S.mute_used = 1;
+    if (S.shift)                                        /* Shift + Mute + a track: solo (the Ableton gesture) */
+        A.seq.solo ^= (uint8_t)(1u << t);
+    else if (S.mute_tap_ms[t] && S.now - S.mute_tap_ms[t] < DOUBLE_MS) {   /* a double tap: solo (the first tap's mute
+                                                         * taken back) */
+        A.seq.mute ^= (uint8_t)(1u << t);
+        A.seq.solo ^= (uint8_t)(1u << t);
+        S.mute_tap_ms[t] = 0;
+    } else {
+        A.seq.mute ^= (uint8_t)(1u << t);
+        S.mute_tap_ms[t] = S.now ? S.now : 1;
+    }
+}
+
 /* a track's pad or button: select it; with Mute held: mute it (Shift too: solo) */
 static void track_press(int t)
 {
     if (t < 0 || t >= QD_TRACKS)
         return;
-    if (S.mute_down) {
-        S.mute_used = 1;
-        if (S.shift)                                    /* Shift + Mute + a track: solo (the Ableton gesture) */
-            A.seq.solo ^= (uint8_t)(1u << t);
-        else if (S.mute_tap_ms[t] && S.now - S.mute_tap_ms[t] < DOUBLE_MS) {   /* a double tap: solo (the first tap's
-                                                         * mute taken back) */
-            A.seq.mute ^= (uint8_t)(1u << t);
-            A.seq.solo ^= (uint8_t)(1u << t);
-            S.mute_tap_ms[t] = 0;
-        } else {
-            A.seq.mute ^= (uint8_t)(1u << t);
-            S.mute_tap_ms[t] = S.now ? S.now : 1;
-        }
-    } else
+    if (S.mute_down)
+        mute_press(t);
+    else
         qd_ctl_select_track(&A, t);
 }
 
@@ -1803,6 +2256,14 @@ static void page_pad(int col, int down, int vel)
         } else if (down && S.shift) {                   /* Shift: the dice, this page shaken at once */
             qd_snd_randomise(&A, g_snd_core[S.spage][0]);
             show_name("SHAKEN");
+        } else if (col == 4 || col == 5) {              /* ENV, LFO: held + a knob, the mod matrix; a tap its page */
+            if (down)
+                S.mod_hold = col, S.mod_used = 0;
+            else if (S.mod_hold == col) {
+                S.mod_hold = -1;
+                if (!S.mod_used)
+                    snd_pad(col);
+            }
         } else if (down)
             snd_pad(col);
     } else if (S.mode == MV_FX) {                       /* the floors; pad 7: WARP, GLITCH, TV in turn; pad 8: PERFORM
@@ -1811,6 +2272,13 @@ static void page_pad(int col, int down, int vel)
             fx_go(col);
         else if (down && col == 6)
             fx_go(S.fpage >= 6 && S.fpage < 8 ? S.fpage + 1 : 6);
+        else if (down && col == 7) {                    /* PERFORM on / off */
+            if (S.perform)
+                pf_off();
+            else
+                S.perform = 1, S.pf_last = -1;
+            show_name(S.perform ? "PERFORM" : "PERFORM OFF");
+        }
     } else if (S.mode == MV_CORE && S.scr == QD_SCR_MFX) {   /* MIDI FX: the slots (the core's B1..B8: tap selects,
                                                          * again its next page; held, knob 1 its effect, the wheel moves
                                                          * it); two taps: the slot bypassed (the core's B10) */
@@ -1828,7 +2296,13 @@ static void page_pad(int col, int down, int vel)
         if (down)
             S.mfx_tap_ms[col] = S.now ? S.now : 1;
         S.mfx_pad = down ? col : S.mfx_pad == col ? -1 : S.mfx_pad;
-        qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
+        {   /* (the selected slot tapped again: the core would turn its page; here the wheel turns pages, so the page
+             * stays and two taps only bypass) */
+            const int pg = A.ui.mfx_page, again = col == A.ui.mfx_slot;
+            qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
+            if (again)
+                A.ui.mfx_page = pg;
+        }
     } else if (S.mode == MV_HOME) {                     /* TRACKS: select; held, Volume / the wheel / the knobs are its */
         if (down) {
             track_press(col);
@@ -1840,13 +2314,52 @@ static void page_pad(int col, int down, int vel)
         qd_app_key(&A, QD_BLACK_KEY[col], down, down ? vel : 0);
 }
 
+/* the idle screen (the laughing brain): any press of a pad, a step or a button wakes it and does nothing else (its
+ * release too); turns and touches leave it be. The core's own wake takes the press (as PLAY's at the title) */
+static uint8_t g_eat_note[128], g_eat_cc[128];
+static int idle_eat(int is_cc, int n, int down)
+{
+    uint8_t *eat = is_cc ? g_eat_cc : g_eat_note;
+    if (n < 0 || n > 127)
+        return 0;
+    if (!down && eat[n]) {
+        eat[n] = 0;
+        return 1;
+    }
+    if (!down || S.mode != MV_IDLE || S.over)
+        return 0;
+    eat[n] = 1;
+    tap(B_PLAY);                                        /* (at idle the core only wakes: playback does not start) */
+    return 1;
+}
+
 static void surface_note(int note, int vel)
 {
     static uint16_t step_eaten;                         /* a step whose press was a shortcut: its release is no key */
     const int down = vel > 0;
+    if (note >= N_STEP0 && idle_eat(0, note, down))
+        return;
     if (note <= N_JOG_TOUCH) {
+        if (note < N_VOL_TOUCH && (S.mute_down || (S.mk_touch >> note & 1u))) {   /* Mute held, anywhere: knob n
+                                                         * touched and let go mutes track n (two touches, or Shift:
+                                                         * solos); turned instead, its volume */
+            const unsigned b = 1u << (note - N_KNOB_TOUCH0);
+            if (down) {
+                S.mk_touch |= b, S.mk_turned &= ~b;
+                S.touch = note, S.touch_turned = 0;
+            } else {
+                if ((S.mk_touch & b) && !(S.mk_turned & b))
+                    mute_press(note - N_KNOB_TOUCH0);
+                S.mk_touch &= ~b;
+                if (S.touch == note)
+                    S.touch = -1;
+            }
+            return;
+        }
         if (note == N_VOL_TOUCH)
             S.vol_touch = down;
+        if (note == N_JOG_TOUCH)                        /* (a finger on the wheel: the knobs keep the all-eight view) */
+            S.jog_touch = down;
         if (down)
             S.touch = note, S.touch_turned = 0;
         else if (S.touch == note)
@@ -1859,7 +2372,7 @@ static void surface_note(int note, int vel)
             page_step(i, down);
             return;
         }
-        if ((scn_on() || arr_on()) && !S.shift) {     /* SCENES, ARRANGE: the steps launch the 16 scenes */
+        if ((scn_on() || arr_on() || sq_on()) && !S.shift) {   /* SCENES, ARRANGE, SEQ: the steps launch the scenes */
             if (down)
                 scene_launch(i);
             return;
@@ -1883,6 +2396,10 @@ static void surface_note(int note, int vel)
     }
     if (note >= N_PAD0 && note < N_PAD0 + 32) {
         const int idx = note - N_PAD0;                  /* row 0 the bottom */
+        if (S.over == OV_PROJECTS) {                    /* PROJECTS: the 32 projects */
+            pj_pad(idx, down);
+            return;
+        }
         if (clips_on()) {                               /* CLIPS: all four rows the clips */
             clip_pad(idx, down);
             return;
@@ -1895,8 +2412,10 @@ static void surface_note(int note, int vel)
             arr_pad(idx, down);
             return;
         }
+        if (sq_on())                                    /* SEQ: the pads do nothing */
+            return;
         if (mix_on()) {                                 /* MIX: the top row what is set, the rows below the tracks */
-            mix_pad(idx, down);
+            mix_pad_v(idx, down, vel);
             return;
         }
         if (page_mode() && idx < 16) {                  /* rows 3-4: the shown page's start and end */
@@ -1905,6 +2424,10 @@ static void surface_note(int note, int vel)
         }
         if (page_mode() && idx < 24)
             return;
+        if (S.mode == MV_FX && S.perform && idx < 24 && S.pad_note[idx] < 0) {   /* PERFORM: the performance pads */
+            pf_pad(idx, down);
+            return;
+        }
         if (idx >= 24 && (top_row_on() || !down) && S.pad_note[idx] < 0)
             page_pad(idx - 24, down, vel);
         else
@@ -1917,6 +2440,8 @@ static int rel(int v) { return v < 64 ? v : v - 128; }                      /* a
 static void surface_cc(int cc, int v)
 {
     const int down = v > 0;
+    if (cc != CC_JOG && cc != CC_VOLUME && !(cc >= CC_KNOB1 && cc < CC_KNOB1 + 8) && idle_eat(1, cc, down))
+        return;
     if (cc >= CC_KNOB1 && cc < CC_KNOB1 + 8) {
         knob(cc - CC_KNOB1, rel(v));
         return;
@@ -1936,6 +2461,8 @@ static void surface_cc(int cc, int v)
         S.pot += rel(v) * 8;
         S.pot = S.pot < 0 ? 0 : S.pot > 1023 ? 1023 : S.pot;
         qd_app_master(&A, S.pot);
+        S.last_knob = KI_MASTER;                        /* (its popup while it turns) */
+        S.turn_ms = S.now ? S.now : 1;
         break;
     case CC_JOG_CLICK: wheel_click(down); break;
     case CC_SHIFT: S.shift = down; break;               /* the Move's own modifier: the core never sees a SHIFT (its SHIFT
@@ -1975,7 +2502,13 @@ static void surface_cc(int cc, int v)
                 sent = -1;
                 break;
             }
-            if (scn_on() || arr_on()) {                 /* SCENES, ARRANGE: up to the belt */
+            if (mix_on()) {                             /* MIX: back to CLIPS (the only way out but the buttons) */
+                sess_button(SN_CLIPS, 1);
+                sess_button(SN_CLIPS, 0);
+                sent = -1;
+                break;
+            }
+            if (scn_on() || arr_on() || sq_on()) {      /* SCENES, ARRANGE, SEQ: up to the belt */
                 S.belt = 1;
                 S.name_until = S.now;
                 S.belt_sel = S.sn_mode;
@@ -2188,6 +2721,14 @@ static void input(const uint8_t p[4])
         return;
     if (st == 0x90) surface_note(p[2], p[3]);
     else if (st == 0x80) surface_note(p[2], 0);
+    else if (st == 0xA0 && p[2] >= N_PAD0 && p[2] < N_PAD0 + 32)   /* a pad's pressure (MIX: the glide's speed) */
+        mix_pressure(p[2] - N_PAD0, p[3]);
+    else if (st == 0xD0) {                              /* (the whole surface's pressure: every column held) */
+        int c;
+        for (c = 0; c < 8; c++)
+            if (S.mxg_row[c] >= 0)
+                S.mxg_pres[c] = p[2];
+    }
     else if (st == 0xB0) surface_cc(p[2], p[3]);
 }
 
@@ -2324,10 +2865,11 @@ static void leds(void)
 {
     qd_leds_t L;
     int i;
-    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on(), mix = mix_on(), scn = scn_on(), arr = arr_on();
+    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on(), mix = mix_on(), scn = scn_on(), arr = arr_on(),
+              sq = sq_on();
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
-        if ((scn || arr) && !S.shift) {                /* SCENES, ARRANGE: the steps launch the scenes */
+        if ((scn || arr || sq) && !S.shift) {          /* SCENES, ARRANGE, SEQ: the steps launch the scenes */
             led_note(N_STEP0 + i, scene_led(i, blink));
             continue;
         }
@@ -2355,6 +2897,15 @@ static void leds(void)
     }
     for (i = 0; i < 32; i++) {                          /* the note pads: struck white, a root green, the rest dim (the
                                                          * top row too while it is hidden) */
+        if (S.over == OV_PROJECTS) {                    /* PROJECTS: each in its colour (none: light grey), the open one
+                                                         * white, empty dark; Copy's taken one, Delete's armed blinking */
+            const int p = pj_at(i), c = p < QD_NPROJ ? A.per.pcol[p] : 0;
+            led_note(N_PAD0 + i, (uint8_t)(p >= QD_NPROJ || !A.per.pexists[p] ? C_OFF
+                                           : p == S.pj_del ? (blink ? C_RED : C_OFF)
+                                           : p == S.pj_take ? (blink ? C_WHITE : C_OFF)
+                                           : p == A.per.proj ? C_WHITE : c >= 1 && c <= 8 ? TRK_COL[c - 1] : C_LGREY));
+            continue;
+        }
         if (clips) {                                    /* CLIPS: a clip in its track's colour, playing green, queued
                                                          * green blinking, stopping its colour blinking; the clip edited
                                                          * white (an empty slot chosen: grey) */
@@ -2377,6 +2928,10 @@ static void leds(void)
             led_note(N_PAD0 + i, c);
             continue;
         }
+        if (sq) {                                       /* SEQ: the pads dark */
+            led_note(N_PAD0 + i, C_OFF);
+            continue;
+        }
         if (scn) {                                      /* SCENES: the lower rows the scenes, the one edited white */
             const int k = i < 8 ? i + 8 : i - 8;
             led_note(N_PAD0 + i, (uint8_t)(i >= 16 ? C_OFF : k == S.scn ? C_WHITE : scene_led(k, blink)));
@@ -2393,10 +2948,19 @@ static void leds(void)
         if (mix) {                                      /* MIX: what is set (the chosen white), the tracks' columns in
                                                          * their colours up to the value */
             const int c = i % 8, row = i / 8;
-            led_note(N_PAD0 + i, (uint8_t)(row == 3 ? (c == (S.mix_k >= TS_WARP ? 7 : S.mix_k) ? C_WHITE
+            led_note(N_PAD0 + i, (uint8_t)(row == 3 && !S.mix_hide ? (c == (S.mix_k >= TS_WARP ? 7 : S.mix_k) ? C_WHITE
                                                        : c == 0 ? C_LGREY : c == 1 ? C_YELLOW : C_BLUE)
                                            : c >= QD_TRACKS ? C_OFF : (A.seq.mute >> c & 1u) ? (mix_lit(c, row) ? C_RED : C_OFF)
                                            : mix_lit(c, row) ? TRK_COL[c] : row == 0 ? TRK_DIM[c] : C_OFF));
+            continue;
+        }
+        if (S.mode == MV_FX && S.perform && i < 24) {   /* PERFORM: each kind its colour, on white (latched: blinking) */
+            static const uint8_t IDLE[3] = { C_DKGREEN, C_DKYELLOW, C_BLUE }, ON[3] = { C_GREEN, C_YELLOW, C_LTBLUE };
+            const int row = i / 8, tape = row == 0 && i >= 4;
+            const int win = row == 2 ? pf_on(i) : row == 1 ? pf_newest(8, 16) == i : tape ? pf_newest(4, 8) == i
+                          : pf_newest(0, 4) == i;
+            led_note(N_PAD0 + i, (uint8_t)(win ? (S.pf_latch[i] && !S.pf_held[i] && blink ? (tape ? C_RED : ON[row]) : C_WHITE)
+                                           : pf_on(i) ? (tape ? C_RED : ON[row]) : tape ? TRK_DIM[0] : IDLE[row]));
             continue;
         }
         if (i >= 24 && top_row_on())
@@ -2416,7 +2980,7 @@ static void leds(void)
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
                                                                  : pad_is_root(i) ? C_GREEN : C_GREY));
     }
-    for (i = 0; i < 8 && top_row_on() && !clips && !mix && !scn && !arr; i++) {   /* the top row's keys */
+    for (i = 0; i < 8 && top_row_on() && !clips && !mix && !scn && !arr && !sq && S.over != OV_PROJECTS; i++) {
         uint8_t c;
         if (S.mute_down)                                /* Mute held: the tracks, a muted one red, a soloed one yellow */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.solo >> i & 1u) ? C_YELLOW : (A.seq.mute >> i & 1u) ? C_RED
@@ -2424,8 +2988,8 @@ static void leds(void)
         else if (S.mode == MV_SOUND)                    /* the page pads (ENV, LFO light blue), RND PAGE, RND SOUND */
             c = (uint8_t)(i == 6 ? (S.rnd_pad == 6 ? C_WHITE : C_DKYELLOW) : i == 7 ? (S.rnd_pad == 7 ? C_WHITE : C_RED)
                           : snd_pad_of(S.spage) == i ? C_WHITE : i >= 4 ? C_LTBLUE : C_LGREY);
-        else if (S.mode == MV_FX)                       /* the floors; pad 7 WARP / GLITCH / TV; pad 8 PERFORM (later) */
-            c = (uint8_t)(i == 7 ? C_OFF : S.fpage == i || (i == 6 && S.fpage >= 6) ? C_WHITE : C_BLUE);
+        else if (S.mode == MV_FX)                       /* the floors; pad 7 WARP / GLITCH / TV; pad 8 PERFORM */
+            c = (uint8_t)(i == 7 ? (S.perform ? C_WHITE : C_RED) : S.fpage == i || (i == 6 && S.fpage >= 6) ? C_WHITE : C_BLUE);
         else if (S.mode == MV_CORE && S.scr == QD_SCR_MFX) {   /* MIDI FX: the slots in the track's colour (bypassed:
                                                          * dim; empty: off), the selected one white (bypassed: light
                                                          * grey; empty: grey) */
@@ -2441,6 +3005,11 @@ static void leds(void)
             c = shade(L.key[QD_BLACK_KEY[i]], C_DKBLUE, C_BLUE, C_LTBLUE);
         led_note(N_PAD0 + 24 + i, c);
     }
+    for (i = 0; i < 16; i++)                            /* the icons under the steps (white, CC 16-31): Shift held, the
+                                                         * shortcuts there lit, the one open bright */
+        led_cc(CC_STEP_ICON0 + i, (uint8_t)(!S.shift || !SHIFT_STEP[i] || S.mode == MV_IDLE ? 0
+                                            : (SHIFT_STEP[i] == SS_SETUP && S.over == OV_SETUP) ||
+                                              (SHIFT_STEP[i] == SS_TEMPO && S.over == OV_TEMPO) ? 124 : 64));
     led_cc(CC_SHIFT, (uint8_t)(S.shift ? 124 : 16));
     led_cc(CC_MENU, (uint8_t)(S.session ? 124 : white(L.button[B_HOME])));
     led_cc(CC_BACK, (uint8_t)(S.over || (S.mode != MV_HOME && S.mode != MV_IDLE) ? 64 : 6));
@@ -2500,6 +3069,8 @@ void egm_init(const char *flash_path)
     S.fpage = 1;                                        /* CHORUS */
     S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = S.cl_take = S.mfx_pad = S.mfx_dbl = -1;
     memset(S.tsel, -1, sizeof S.tsel);
+    memset(S.mxg_row, -1, sizeof S.mxg_row);
+    S.mod_hold = -1;
     S.run = -1;
     S.rng = 0x45474D31u;                                /* ("EGM1") */
     for (i = 0; i < 6; i++)
@@ -2530,6 +3101,7 @@ void egm_audio(int16_t *stereo, int frames)
     pthread_mutex_lock(&g_mu);
     qd_app_audio(&A, stereo, (uint32_t)frames);
     pthread_mutex_unlock(&g_mu);
+    pf_process(stereo, frames);                         /* PERFORM's repeat, filter, tape: on the whole mix */
 }
 
 int egm_leds_take(uint8_t out[][4], int max)
@@ -2554,6 +3126,8 @@ int egm_ui_step(uint32_t now_ms)
     }
     clip_follow();
     scene_run();
+    pf_sync();
+    mix_glide();
     qd_app_tick_locked(&A, now_ms);
     if (S.rnd_pad >= 0 && !S.rnd_done && S.mode == MV_SOUND && now_ms - S.rnd_ms >= RND_MS) {   /* held a second */
         qd_snd_randomise(&A, S.rnd_pad == 6 ? g_snd_core[S.spage][0] : -1);
@@ -2678,8 +3252,16 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (S.over == OV_PROJECTS) {                        /* PROJECTS: the open one */
+        int k, used = 0;
+        for (k = 0; k < QD_NPROJ; k++)
+            used += A.per.pexists[k] != 0;
+        scr_projects(m, A.per.proj + 1, QD_NPROJ, A.per.pname[A.per.proj], A.per.pcol[A.per.proj], used);
+        return;
+    }
     if (S.belt && S.session && S.mode == MV_HOME && !S.over) {   /* the belt: the pages, the chosen one large */
-        scr_belt(m, SN_NAME, SN_N, S.belt_sel);
+        const uint32_t dt = now_ms - S.belt_ms;
+        scr_belt(m, SN_NAME, SN_N, S.belt_sel, S.belt_from, S.belt_ms && dt < BELT_MS ? (int)(dt * 1000u / BELT_MS) : -1);
         return;
     }
     if (scn_on()) {                                     /* SCENES: the edited scene's eight */
@@ -2689,6 +3271,25 @@ static void page_draw(mono_t *m, uint32_t now_ms)
         for (i = 0; i < 8; i++) {
             scn_val(i, val[i], sizeof val[i], &frac[i], 1);
             lab[i] = SCN_LAB[i], vp[i] = val[i];
+        }
+        scr_eight(m, lab, vp, frac, 8);
+        return;
+    }
+    if (S.mode == MV_CORE && S.scr == QD_SCR_MFX) {     /* MIDI FX: the Move's own picture of the core's page */
+        static ui_mfx_t v;
+        memset(&v, 0, sizeof v);
+        qd_view_mfx(&A, &v);
+        scr_mfx(m, v.g, v.track ? v.track : A.sel + 1, v.type, v.byp, v.sel, v.page, v.npages, v.lab,
+                (const char (*)[12])v.val, v.has);
+        return;
+    }
+    if (sq_on()) {                                      /* SEQ: the subpage's settings */
+        static char val[8][16];
+        const char *lab[8], *vp[8];
+        int frac[8], i;
+        for (i = 0; i < 8; i++) {
+            sq_val(i, val[i], sizeof val[i], &frac[i]);
+            lab[i] = SQP_LAB[S.seqp][i], vp[i] = val[i];
         }
         scr_eight(m, lab, vp, frac, 8);
         return;
@@ -2787,6 +3388,16 @@ static void page_draw(mono_t *m, uint32_t now_ms)
                                          SCR_FX_WARP, SCR_FX_GLITCH, SCR_FX_TV };
         kinfo_t ki;
         int val[8], i;
+        if (S.perform && S.pf_last >= 0 && pf_on(S.pf_last)) {   /* PERFORM: a throw its floor's picture, the rest
+                                                         * their names */
+            if (S.pf_last >= 16) {
+                for (i = 0; i < 8; i++)
+                    val[i] = -1;
+                scr_fx(m, KIND[S.pf_last - 15], val, now_ms);
+            } else
+                scr_page_name(m, PF_NAME[S.pf_last]);
+            return;
+        }
         for (i = 0; i < 8; i++) {
             knob_info(i, &ki);
             val[i] = ki.ok ? ki.frac : -1;
@@ -2878,7 +3489,19 @@ int egm_frame(uint8_t packed[MONO_PACKED], uint32_t now_ms)
     } else if (S.ride_ms && now_ms - S.ride_ms < RIDE_MS) {
         scr_lift(&m, S.ride_from, S.ride_to, S.ride_up, (int)((now_ms - S.ride_ms) * 1000u / RIDE_MS));
         done = 1;
-    } else if (kn >= 0) {
+    } else if (S.jog_touch && pages) {                  /* a finger on the wheel, knobs turned or not: every knob at once */
+        static kinfo_t all[8];
+        const char *lab[8], *val[8];
+        int frac[8], i;
+        for (i = 0; i < 8; i++) {
+            knob_info(i, &all[i]);
+            lab[i] = all[i].ok ? all[i].name : "";
+            val[i] = all[i].val;
+            frac[i] = all[i].frac;
+        }
+        scr_eight(&m, lab, val, frac, 8);
+        done = 1;
+    } else if (kn >= 0 && !S.jog_touch) {               /* (the wheel touched: the page's own view, no pop-up) */
         knob_info(kn, &ki);
         /* a value known: while touched or just turned. Only a name: while touched and not yet turned (the core's own
          * picture shows the value then) */
@@ -2918,6 +3541,14 @@ void egm_describe(char *out, int cap)
              qd_seq_bpm(&A.seq), A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.seq.solo,
              A.ui.page[A.sel] + 1, S.shift, SQ_NAME[S.seq_mode], top_row_on() ? "on" : "hidden");
     snprintf(out + strlen(out), (size_t)cap - strlen(out), " bar=%d", (int)(A.seq.tick / (16 * (int64_t)QD_TPS)) + 1);
+    {   /* PROJECTS: the open one, its name and colour; those used (bit p) */
+        uint32_t used = 0;
+        int k;
+        for (k = 0; k < QD_NPROJ; k++)
+            used |= (uint32_t)(A.per.pexists[k] != 0) << k;
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " proj=%d pname=%s pcol=%d projs=%x", A.per.proj + 1,
+                 A.per.pname[A.per.proj][0] ? A.per.pname[A.per.proj] : "-", A.per.pcol[A.per.proj], used);
+    }
     snprintf(out + strlen(out), (size_t)cap - strlen(out), " pagemode=%d loopmask=%x npage=%d level=%d", page_mode(),
              trk_loop(), trk_npage(), A.model.t[A.sel].mix.level);
     {   /* Session: the mode, the rows, each track's clip (x: stopped; >n queued, >x stopping) */
@@ -2961,7 +3592,32 @@ void egm_describe(char *out, int cap)
                 snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%dx%d", p ? "," : "", A.proj.song[p][0],
                          A.proj.song[p][1]);
         }
-        snprintf(out + strlen(out), (size_t)cap - strlen(out), " mixk=%s mix=", TS_NAME[S.mix_k]);   /* MIX's value */
+        snprintf(out + strlen(out), (size_t)cap - strlen(out),   /* SEQ: its subpage; swing, metronome, click, record
+                                                         * mode, quantize, take, automation, clock out, CC out */
+                 " seqp=%s seqv=%d,%d,%d,%d,%d,%d,%d,%d,%d", SQP_NAME[S.seqp], qd_proj_cpat(&A.proj, A.seq.cur)->swing, A.metro,
+                 A.metro_lvl, A.proj.rec_mode, A.proj.rec_quant, A.proj.rec_dub, A.proj.rec_auto, A.ui.clk_out, A.ui.cc_out);
+        {   /* the selected track's sound: its modulation slots (source:destination:depth) and LFOs (destination:depth) */
+            const int16_t *pp = A.model.t[A.sel].patch;
+            int k, first = 1;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " mods=");
+            for (k = 0; k < QD_NMOD; k++)
+                if (pp[QD_QP_MOD(k, QD_QM_SRC)]) {
+                    snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d:%d:%d", first ? "" : ",",
+                             pp[QD_QP_MOD(k, QD_QM_SRC)], pp[QD_QP_MOD(k, QD_QM_DST)], pp[QD_QP_MOD(k, QD_QM_DEPTH)]);
+                    first = 0;
+                }
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " lfos=%d:%d,%d:%d,%d:%d", pp[QD_QP_LFO(0, QD_QL_DEST)],
+                     pp[QD_QP_LFO(0, QD_QL_DEPTH)] - 64, pp[QD_QP_LFO(1, QD_QL_DEST)], pp[QD_QP_LFO(1, QD_QL_DEPTH)] - 64,
+                     pp[QD_QP_LFO(2, QD_QL_DEST)], pp[QD_QP_LFO(2, QD_QL_DEPTH)] - 64);
+        }
+        {   /* PERFORM: on, the throws (track 1's, the selected's), the audio side's source (0 live, 1 repeat, 2 tape)
+             * and its filter's cutoffs */
+            int src, lp, hp;
+            pf_state(&src, &lp, &hp);
+            snprintf(out + strlen(out), (size_t)cap - strlen(out), " perform=%d thr=%x,%x pf=%d,%d,%d", S.perform, A.thr[0],
+                     A.thr[A.sel], src, lp, hp);
+        }
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " mixk=%s mixrows=%d mix=", TS_NAME[S.mix_k], mix_rows());
         for (t = 0; t < QD_TRACKS; t++)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", mix_val(t, S.mix_k));
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " slots=");   /* each track's slots holding a clip */

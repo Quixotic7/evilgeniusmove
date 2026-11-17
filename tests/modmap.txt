@@ -1,0 +1,30 @@
+# TRIG / SOUND: ENV or LFO held + a knob: that value modulated by the envelope / LFO last chosen on the pad
+tap 85                   # out of the title
+wait 300
+cc 42 127                # TRIG / SOUND; pad 4: FILTER
+cc 42 0
+wait 300
+note 95 100
+wait 30
+note 95 0
+wait 1500
+note 96 100              # ENV held + knob 1 (CUTOFF): ENV 1 -> CUTOFF
+wait 30
+cc 71 4
+cc 71 4
+cc 71 4
+wait 100
+state env-mapped
+shot 01-env
+note 96 0
+wait 1500
+note 97 100              # LFO held + knob 2 (RESO): LFO 1 -> RESO
+wait 30
+cc 72 124
+cc 72 124
+wait 100
+state lfo-mapped
+shot 02-lfo
+note 97 0
+wait 100
+state after

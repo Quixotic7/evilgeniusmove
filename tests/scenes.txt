@@ -50,6 +50,16 @@ cc 73 4
 wait 1200
 state scene2-set
 shot 03-scene2
+cc 56 127                # Undo: scene 2's settings back; Shift + Undo: again
+cc 56 0
+wait 100
+state scene2-undone
+cc 49 127
+cc 56 127
+cc 56 0
+cc 49 0
+wait 100
+state scene2-redone
 tap 85                   # PLAY
 wait 100
 note 24 100              # step 9: scene 9 launched (empty: every track stopped), then step 1: scene 1

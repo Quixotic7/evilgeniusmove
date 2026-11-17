@@ -1,0 +1,9 @@
+# .. a button (Menu): awake, still Sequence; the next Menu: Session
+cc 50 127
+cc 50 0
+wait 200
+state menu-woke
+cc 50 127
+cc 50 0
+wait 200
+state menu-again

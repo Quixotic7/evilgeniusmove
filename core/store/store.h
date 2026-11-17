@@ -48,7 +48,11 @@ extern "C" {
 #define QDS_PAYLOAD (QDS_PAGE - QDS_HDR)   /* 240 */
 #define QDS_MAXREC (QDS_PAYLOAD * 120u)    /* a record's largest (28.1 KiB: a full pattern, 1024 steps and 1024 locks,
                                             * with its sounds) */
+#ifdef QD_HOST
+#define QDS_MAXSEC 1024                    /* sectors a store (the Move's 4 MB image) */
+#else
 #define QDS_MAXSEC 256                     /* sectors a store */
+#endif
 #define QDS_RESERVE 6u                     /* blank sectors kept ahead by default (qd_store_set_reserve: the largest
                                             * record's sectors and one more) */
 #if QD_STORE_BLE

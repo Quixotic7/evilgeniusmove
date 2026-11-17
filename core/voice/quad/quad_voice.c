@@ -48,7 +48,8 @@ static const char *const L_LWAVE[QD_LW_N] = {"TRI", "SINE", "SAW", "SQR", "S&H",
                                              "ARP MAJ", "ARP MIN", "ARP SUS", "ARP 7", "ARP MI7", "ARP MA7",
                                              "ARP DIM"};   /* (seven letters: the editor's value) */
 static const char *const L_LTRIG[QD_LT_N] = {"FREE", "TRIG", "HOLD", "ONE", "HALF"};
-static const char *const L_MSRC[QD_MS_N] = {"OFF", "VEL", "KEY", "MW", "AT", "PB", "BR", "RAND", "F ENV"};
+static const char *const L_MSRC[QD_MS_N] = {"OFF", "VEL", "KEY", "MW", "AT", "PB", "BR", "RAND", "F ENV",
+                                            "ENV 1", "ENV 2", "ENV 3", "LFO 1", "LFO 2", "LFO 3"};
 static const char *const L_VMODE[2] = {"POLY", "MONO"};
 static const char *const L_PRIO[3] = {"LOW", "MID", "HIGH"};
 static const char *const DEST_NAME[QD_D_N] = {"OFF", "PITCH", "CUTOFF", "RESO", "PW 1", "PW 2", "PW 3", "PW ALL",
@@ -1073,6 +1074,7 @@ static void modulate(qd_quad_voice_t *v, int32_t *d)
 {
     const int16_t *p = v->patch;
     const qd_quad_owner_t *o = v->owner;
+    int32_t lraw[3] = {0, 0, 0};                        /* (the LFOs' waves, faded, before their DEPTH: slots' sources) */
     int k;
     memset(d, 0, sizeof(int32_t) * QD_D_N);
     for (k = 0; k < 3; k++) {
@@ -1115,6 +1117,7 @@ static void modulate(qd_quad_voice_t *v, int32_t *d)
             const int32_t n = (fade < 0 ? -fade : fade) * 8, a = (int32_t)(v->lage < (uint32_t)n ? v->lage : (uint32_t)n);
             f = fade < 0 ? a * 32767 / n : 32767 - a * 32767 / n;
         }
+        lraw[k] = (int32_t)(((int64_t)x * f) >> 15);
         x = (int32_t)(((int64_t)x * depth * f) >> 21);   /* (Q15 x depth/64 x fade) */
         v->nx_lw[k] = (int16_t)clamp(x, -32767, 32767);
         if (dest > 0 && dest < QD_D_N)
@@ -1134,6 +1137,10 @@ static void modulate(qd_quad_voice_t *v, int32_t *d)
         case QD_MS_BR: s = o->br * 258; break;
         case QD_MS_RAND: s = v->mrnd; break;
         case QD_MS_FENV: s = v->fenv; break;
+        case QD_MS_ENV1: case QD_MS_ENV2: case QD_MS_ENV3:
+            s = (int32_t)v->chip.v[src - QD_MS_ENV1].env * 128;   /* (the envelope counter 0..255: Q15) */
+            break;
+        case QD_MS_LFO1: case QD_MS_LFO2: case QD_MS_LFO3: s = lraw[src - QD_MS_LFO1]; break;
         default: s = 0; break;
         }
         d[dst] += s * dep / 127;

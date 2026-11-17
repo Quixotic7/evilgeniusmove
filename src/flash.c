@@ -54,7 +54,11 @@ const qd_flash_t *flash_open(const char *path)
         if ((f = fopen(path, "rb"))) {
             const size_t n = fread(g_img, 1, sizeof g_img, f);
             fclose(f);
-            if (n != sizeof g_img) {                    /* a short file is not an image: start erased, keep it aside */
+            if (n < sizeof g_img && n >= 0x100000u && n % 4096u == 0) {   /* (an image of before, 1 MB: its sectors kept,
+                                                         * the rest erased: the store grows into them) */
+                fprintf(stderr, "flash: %s was %zu bytes: grown to %u\n", path, n, EGM_FLASH_SIZE);
+                g_dirty = 1;
+            } else if (n != sizeof g_img) {             /* a short file is not an image: start erased, keep it aside */
                 char bad[540];
                 memset(g_img, 0xFF, sizeof g_img);
                 snprintf(bad, sizeof bad, "%s.bad", path);

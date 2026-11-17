@@ -259,6 +259,9 @@ typedef struct qd_app {
     qd_pool_t pool;
     qd_mix_t mix;
     qd_mix_track_t blk_mt[QD_NTRACK];   /* P2.6: the tracks' mix as qd_app_block_begin found it (the voices' calls read it) */
+    uint8_t thr[QD_NTRACK];            /* the Move's PERFORM throws: bit k a send of track t fully on while set (0..2
+                                        * CHORUS, ECHO, ROOM; 3..7 the rooms CRUSH .. TV), over blk_mt only: the track's
+                                        * own sends are left as they are */
     /* the sequencer (P1.2) */
     qd_project_t proj;
     qd_seq_t seq;

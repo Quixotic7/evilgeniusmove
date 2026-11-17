@@ -335,14 +335,14 @@ CLIPS · MIDI FX · FX · MIX (the four mode buttons' pages) · SCENES · ARRANG
 | Floor | Picture | Knobs |
 |---|---|---|
 | SENDS | The brain in the jar on its machine, the eight send levels below | CHORUS, ECHO, ROOM, DRY, CRUSH, ROBOT, WARP, GLITCH (TV on Shift + knob 8) |
-| CHORUS | Two waves drifting apart over three walking agents | RATE, DEPTH, WIDTH, SEND |
-| ECHO | A ball bouncing lower each time | TIME, RATIO, FDBK, SEND, SYNC, MODE, TONE, WOW |
-| ROOM | A room in perspective, the agent's sound in arcs | SIZE, DAMP, DECAY, SEND, PRE, MOD, LOW, WIDTH |
-| CRUSH | Stepped platforms under a press | BITS, RATE, JITTER, SEND |
-| ROBOT | A robot beside its bursts | FREQ, WAVE, WOBBLE, SEND |
-| WARP | The agent between two dotted hills | TIME, FDBK, SWEEP, SEND |
-| GLITCH | The agent cut into slices | SLICE, CHANCE, PITCH, SEND |
-| TV | An old TV saying READY., signal bars | TONE, HUM, DRIVE, SEND |
+| CHORUS | Two waves drifting apart over three walking agents | RATE, DEPTH, WIDTH; SEND on knob 8 |
+| ECHO | A ball bouncing lower each time | TIME, RATIO, FDBK, SYNC, MODE, TONE, WOW, SEND |
+| ROOM | A room in perspective, the agent's sound in arcs | SIZE, DAMP, DECAY, PRE, MOD, LOW, WIDTH, SEND |
+| CRUSH | Stepped platforms under a press | BITS, RATE, JITTER; SEND on knob 8 |
+| ROBOT | A robot beside its bursts | FREQ, WAVE, WOBBLE; SEND on knob 8 |
+| WARP | The agent between two dotted hills | TIME, FDBK, SWEEP; SEND on knob 8 |
+| GLITCH | The agent cut into slices | SLICE, CHANCE, PITCH; SEND on knob 8 |
+| TV | An old TV saying READY., signal bars | TONE, HUM, DRIVE; SEND on knob 8 |
 
 ### The brain in the jar
 
@@ -519,18 +519,67 @@ compiles.
     design's boxes (scene, repeats under it, the one playing filled, the song's progress under them).
   - **LEDs:** a scene in its colour (none: light grey; no clip in it: off), running green, about to run blinking
     green; ARRANGE's positions in their scenes' colours (the page shown bright, the others dim), the end red.
-  - **Not here yet:** undo for the scene settings and the song (they are the project's header, outside undo); the
-    FM-1's chains into ARRANGE and banks B-D into scenes (no FM-1 project is converted by this build).
+  - **Undo** covers the scene settings and the song: they sit with the MIDI FX groups in the project, and undo's
+    fourth region (`QD_UNDO_R3`) is all three.
+  - **Chains:** nothing to convert. The FM-1 never saves a chain and has no control that makes one (only its demo
+    tour and a test call `qd_seq_chain`), so no FM-1 project holds one. Banks B-D into scenes waits for an FM-1
+    project converter, which this build does not have.
   - Tests: `tests/scenes.txt` (the belt, the settings, NEXT and FIRST alternating with the tempo, the song to its
     end), `keep.txt` (a scene's FOLLOW and the song kept); `make core-test` (113 checks: a launch, a stop and a tempo
     at a tick).
 
+- **The belt as the board draws it (17 November 2026):** each page a box (its icon from the board's frames,
+  `src/belt_art.h`), the chosen one large in the middle, riding a belt with turning rollers into the brain machine;
+  a turn slides the boxes 36 pixels in 180 ms. **SEQ** is on it: TIME (tempo, swing for every scene, launch
+  quantize, metronome, click level), REC (mode, quantize, take, automation), CLOCK (clock out, CC out). No count-in
+  and no clock-in switch: the core has neither (it follows a clock whenever one comes).
+- **From the unit (17 November 2026):** Shift held lights the icons under the steps that are shortcuts (their own
+  white LEDs, CC 16-31), the open one bright. Mute held, anywhere: knob n touched mutes track n (two touches or Shift:
+  solo), and the knobs turn nothing meanwhile. Tests: `tests/seqpage.txt`, `tests/mutes.txt`; `scenes.txt` undoes
+  and redoes a scene's settings.
+- **PERFORM (17 November 2026):** FX's pad 8. Row 3 throws the eight effects fully on: the core's block mix takes
+  `qd_app_t.thr` (bit k a send of a track) over the track's sends for the block only, so nothing saved changes
+  (Sequence: the selected track; Session: every track). Rows 2 and 1 are the whole mix's, after the core's output
+  (`src/perform.c`): a ring of 5.9 s; beat repeat loops the last 1/4 .. 1/32T at the tempo; the tape reads the ring
+  at its own rate (STOP slows to nothing in 0.7 s, HALF, REV, SCRATCH to and fro at 2.2 Hz); either crossfades in and
+  out over 5 ms. The filter is a low-pass and a high-pass in series (state-variable), their cutoffs gliding to each
+  pad's (LP 1 1.2 kHz, LP 2 300 Hz, HP 1 300 Hz, HP 2 1.5 kHz) and open again when let go: a slide along the pads
+  sweeps. Held: on; two taps: latched; the newest of a kind wins. The screen: a throw its floor's picture, the rest
+  their names. *Choice: repeat, filter and tape on the whole mix in Sequence too (the effects are shared rooms on the
+  mix, as decided; a track of its own would need the core's per-track buses).*
+- **The mod matrix (17 November 2026):** the engine's eight modulation slots take six more sources, ENV 1-3 (each
+  oscillator's SID envelope) and LFO 1-3 (the wave, before the LFO's own depth). ENV or LFO held in TRIG / SOUND + a
+  knob: the one last chosen on that pad becomes a slot's source, the knob's value its destination, the turn its depth
+  (the core's hold-to-map); an LFO so keeps its own destination as well. *Choice: a slot for LFOs too, not the LFO's
+  single DEST, so mapping adds and never takes a modulation away.*
+- **From the unit, round 2 (17 November 2026):**
+  - **MIX:** button 4 again hides the top row (four rows of columns); the bottom row is 0, the top 127; a pad held
+    glides the value there at a speed from its pressure (velocity, then aftertouch: 6 to 768 a second).
+  - **Menu** brings each view back in the mode it was left in.
+  - **A finger on the wheel** keeps the all-eight view while knobs turn.
+  - **The main volume** shows its pop-up (a percent) while it turns.
+  - **Every effect's send is on knob 8** (the FX floors table above), its own values on knobs 1-7.
+- **From the unit, round 3 (17 November 2026):** Mute held: a knob turned sets its track's volume (its pop-up), a
+  knob touched and let go without a turn mutes (the mute moved to the release, so a turn never mutes). MIX: no pop-up
+  for the pads (the screen's bars and meters show it; the knobs keep theirs); Shift + a pad goes straight to its
+  height; the wheel does nothing in MIX (it opened the belt, which took MIX away) and Back returns to CLIPS. The belt
+  opens from CLIPS only. The idle screen (the laughing brain) wakes at any pad, step or button press, which does nothing
+  else (its release swallowed too); turns and touches leave it be. Tests: `tests/wake.txt`, `wake-button.txt`.
+  - **MIDI FX** is drawn for this screen (the core's page cropped showed its top only); the selected slot tapped
+    again keeps its page (the wheel turns pages), so two taps only bypass.
+  - **PROJECTS** (Shift + step 1) is the design's: 32 projects on the pads (the core now keeps 32 on the Move: the
+    store's image is 4 MB, 992 sectors; an image of 1 MB grows into it, its records kept), each with a colour (the
+    header record's last byte). Tap: open / new; Copy + pad, then an empty pad; Delete + pad twice. Knob 1 the name
+    (the core's ideas), knob 2 the colour.
+  - **Sounds that do not change:** the demo's DRUMS (track 1) and track 8 play every step with a sound lock and
+    carry pan / send / level locks; a lock wins over the track, so editing those tracks' sounds or sends is not heard.
+    Open: how the Move should treat it.
+  - Tests: `tests/perform.txt`, `modmap.txt`, `views.txt`, `jogtouch.txt`, `projects.txt` (with `EGM_FLASH`); `mix.txt`
+    rewritten for the glide and the hidden row.
+
 **Not built yet:**
 
-1. **PERFORM:** throws, beat repeat, filter sweeps, tape.
-2. **Mod mapping:** a modulation matrix for ENV and LFO.
-3. **The rest of the page belts:** Session's SEQ page and the belt's motion; Sequence's belt; the sound-lock keys,
-   the Trig page on pad 1.
+1. **Sequence's page belt**, the sound-lock keys, the Trig page on pad 1.
 
 **17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
 evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this

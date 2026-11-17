@@ -35,6 +35,9 @@ struct qd_app;
 #define QD_NPROJ 4                     /* (2026-10-27: the Bluetooth package's, qd_config.h QD_PKG_BLE; 2026-11-15: its
                                         * store's, QD_STORE_BLE: the .rfm1's too) */
 #define QD_NLIB 128
+#elif defined(QD_HOST)
+#define QD_NPROJ 32                    /* the Move (2026-11-17): 4 x 8, every project on the pads */
+#define QD_NLIB 256
 #else
 #define QD_NPROJ 8
 #define QD_NLIB 256                    /* P1.5t: MY presets (was the LIBRARY's 128) */
@@ -85,7 +88,8 @@ struct qd_app;
 #define QD_FLASH_LIB_SEC 32            /* (256 presets of about 120 bytes: a quarter of it) */
 #define QD_FLASH_LIB_RESERVE 6
 #define QD_FLASH_PRJ 0x020000u
-#define QD_FLASH_PRJ_SEC 224
+#define QD_FLASH_PRJ_SEC 992                   /* (the Move, 2026-11-17: a 4 MB image for 32 projects; was 224 in 1 MB: an
+                                                * image of then grows, its sectors kept, the new ones blank) */
 #endif
 #define QD_SWAP_SEC 256                /* (P2.1: the host's RAM store for the patterns and sounds at the device's sizes) */
 #define QD_SWAP_KEYS 1024
@@ -120,6 +124,7 @@ typedef struct {
                                         * references in other projects stay dangling until they load) */
     char pname[QD_NPROJ][QD_PROJ_NAME];   /* the projects' names */
     uint8_t pexists[QD_NPROJ];
+    uint8_t pcol[QD_NPROJ];            /* the Move: each project's colour (0 none; its header record's last byte) */
     int proj;                          /* the project worked on, 0..QD_NPROJ - 1 */
     uint8_t pdemo;                     /* .. it started with the demo patterns (its patterns' defaults) */
     uint32_t saved[QD_PI_N], seen[QD_PI_N], changed[QD_PI_N];
@@ -200,6 +205,8 @@ int qd_proj_new(struct qd_app *a, int p);
 int qd_proj_copy(struct qd_app *a, int from, int to);
 int qd_proj_delete(struct qd_app *a, int p);
 void qd_proj_name(struct qd_app *a, int p, const char *name);
+void qd_proj_colour(struct qd_app *a, int p, int colour);   /* the Move: a project's colour (0 none; another
+                                                         * project's: its header rewritten) */
 
 /* the POOL (the project's, slots 1..128; P1.5t: a new project's starts empty, slot 1 is no different): the first free
  * slot (0 none); add (into the first free: its number, 0 full; add_sound keeps the preset it came from); move / swap a

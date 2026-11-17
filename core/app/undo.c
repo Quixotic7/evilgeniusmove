@@ -12,9 +12,9 @@ typedef char qd_undo_lib_ok[QD_NLIB_UNDO == QD_NLIB ? 1 : -1];
 #include "../seq/zr.h"
 #endif
 
+#define G_MFX ((uint32_t)QD_UNDO_R3)                     /* (the MIDI FX groups; the Move: the scenes, the song) */
 #ifdef QD_UNDO_SLOTS
 #define GEND(u) (QD_UNDO_POOL - (u)->keep)              /* (P2.1c: the gesture region's top) */
-#define G_MFX (QD_MFX_NGROUP * (uint32_t)sizeof(qd_mfx_group_t))
 #define G_SREC (2u + (uint32_t)sizeof(qd_sound_t))      /* (a slot's record: region, slot, the sound before) */
 enum { G_TAG_SLOT = 'S', G_TAG_XL = 'X' };
 static void g_free(qd_hist_t *u) { u->glo = GEND(u), u->gpz = 0; }
@@ -99,7 +99,7 @@ static FZ_COLD void undo_take(qd_app_t *a)            /* the gesture's "before" 
     u->pat0 = *qd_proj_pat(&a->proj, u->pat);
     memcpy(u->snd0, a->proj.sound, sizeof u->snd0);
     memcpy(u->lib0, a->per.lib, sizeof u->lib0);
-    memcpy(u->mfx0, a->proj.mfx, sizeof u->mfx0);     /* P1.6c */
+    memcpy(u->mfx0, (const uint8_t *)a->proj.mfx, sizeof u->mfx0);   /* P1.6c */
 #endif
     u->nsound0 = a->proj.nsound;
     u->xl_n = 0;
@@ -498,7 +498,7 @@ static FZ_COLD void undo_apply(qd_app_t *a, const qd_undo_lvl_t *l)
     mem[1] = (uint8_t *)a->proj.sound, sz[1] = sizeof a->proj.sound;
     mem[2] = (uint8_t *)a->per.lib, sz[2] = sizeof a->per.lib;
 #endif
-    mem[3] = (uint8_t *)a->proj.mfx, sz[3] = sizeof a->proj.mfx;   /* (P1.6c) */
+    mem[3] = (uint8_t *)a->proj.mfx, sz[3] = G_MFX;     /* (P1.6c) */
     for (r = 0; r < 4; r++) {
         uint32_t len;
         memcpy(&len, d + o, 4);

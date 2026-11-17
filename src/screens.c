@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "belt_art.h"
+
 #include "screens.h"
 
 /* ------------------------------------------------------------------ the brain in the jar --- */
@@ -324,7 +326,10 @@ void scr_eight(mono_t *m, const char *const *lab, const char *const *val, const 
         snprintf(l, sizeof l, "%s", lab[i]);
         snprintf(v, sizeof v, "%s", val[i] ? val[i] : "");
         mono_text(m, x, y + 2, l, MONO_FS, 1, 1);
-        mono_text(m, x, y + 11, v, MONO_FB, 1, 1);
+        if (strlen(v) > 3)                              /* (four letters fill the column: the small font, a gap kept) */
+            mono_text(m, x, y + 13, v, MONO_FS, 1, 1);
+        else
+            mono_text(m, x, y + 11, v, MONO_FB, 1, 1);
         if (frac[i] >= 0)
             mono_rect(m, x, y + 23, 1 + frac[i] * 27 / 1000, 2, 1);
     }
@@ -763,27 +768,63 @@ void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, co
 }
 
 /* ------------------------------------------------------------------ Session's page belt --- */
-void scr_belt(mono_t *m, const char *const *names, int n, int sel)
+/* after the board's frames: the pages' boxes ride a belt into the brain machine at the right; the chosen one large in
+ * the middle (x 37..66), its neighbours small (36 apart), its name under the belt. Moving (t < 1000, from the page
+ * before): every box small, sliding, the rollers turning with them */
+static void belt_icon(mono_t *m, int k, int cx, int cy)
 {
-    int i;
+    const belt_icon_t *ic = &BELT_ICON[k];
+    int x, y;
+    for (y = 0; y < ic->h; y++)
+        for (x = 0; x < ic->w; x++)
+            if (ic->row[y] >> (31 - x) & 1u)
+                mono_pset(m, cx - ic->w / 2 + x, cy - ic->h / 2 + y, 1);
+}
+
+void scr_belt(mono_t *m, const char *const *names, int n, int sel, int from, int t)
+{
+    const int moving = t >= 0 && t < 1000;
+    const int v1000 = moving ? from * 1000 + (sel - from) * t : sel * 1000;   /* (the belt's place, in thousandths) */
+    int k, x, y;
     mono_clear(m);
-    mono_line(m, 0, 40, MONO_W - 1, 40, 1);             /* the belt, a box a page riding it */
-    for (i = -2; i <= 2; i++) {
-        const int k = sel + i, w = i ? 18 : 30, h = i ? 12 : 20, x = 64 + i * 30 - w / 2;
-        if (k < 0 || k >= n)
+    for (k = 0; k < n; k++) {                           /* the boxes */
+        const int cx = 52 + (int)((int64_t)(k * 1000 - v1000) * 36 / 1000);
+        const int big = !moving && k == sel;
+        const int w = big ? 30 : 22, h = big ? 28 : 20, bx = cx - w / 2, by = 36 - h;
+        if (bx > BELT_MX || bx + w < 0)
             continue;
-        if (i)
-            mono_box(m, x, 40 - h, w, h, 1);
-        else
-            mono_rect(m, x, 40 - h, w, h, 1);
+        mono_rect(m, bx, by, w, h, 0);
+        mono_box(m, bx, by, w, h, 1);
+        if (big)
+            mono_box(m, bx + 1, by + 1, w - 2, h - 2, 1);
+        belt_icon(m, k, cx, by + h / 2);
     }
-    for (i = 0; i < MONO_W; i += 6)                     /* (its rollers) */
-        mono_pset(m, i, 42, 1);
-    mono_ctext(m, 64, 48, names[sel], MONO_FB, 2, 1);
-    if (sel > 0)
-        mono_text(m, 1, 52, "<", MONO_FB, 1, 1);
-    if (sel < n - 1)
-        mono_text(m, 122, 52, ">", MONO_FB, 1, 1);
+    mono_line(m, 0, 36, BELT_MX, 36, 1);                /* the belt, its rollers turning with it */
+    mono_line(m, 0, 41, BELT_MX, 41, 1);
+    {
+        const int ph = (int)(((int64_t)v1000 * 36 / 1000) % 12);
+        for (x = -12; x < BELT_MX; x += 12) {
+            const int rx = x + 9 - ph;
+            if (rx >= 1 && rx < BELT_MX - 1) {
+                mono_pset(m, rx, 38, 1), mono_pset(m, rx, 40, 1);
+                mono_line(m, rx - 1, 39, rx + 1, 39, 1);
+            }
+            if (rx - 7 >= 0 && rx - 7 < BELT_MX)
+                mono_pset(m, rx - 7, 37, 1);
+            if (rx - 5 >= 0 && rx - 5 < BELT_MX)
+                mono_pset(m, rx - 5, 37, 1);
+        }
+    }
+    mono_rect(m, BELT_MX, 0, BELT_MW, 42, 0);           /* the brain machine */
+    for (y = 0; y < 42; y++)
+        for (x = 0; x < BELT_MW; x++)
+            if (BELT_MACHINE[y] >> (31 - x) & 1u)
+                mono_pset(m, BELT_MX + x, y, 1);
+    if (!moving) {                                      /* the name, bold */
+        const int w = mono_text_w(names[sel], MONO_FB, 1);
+        mono_text(m, 52 - w / 2, 50, names[sel], MONO_FB, 1, 1);
+        mono_text(m, 53 - w / 2, 50, names[sel], MONO_FB, 1, 1);
+    }
 }
 
 /* ------------------------------------------------------------------ Session's ARRANGE --- */
@@ -793,7 +834,7 @@ void scr_belt(mono_t *m, const char *const *names, int n, int sel)
 void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, int prog)
 {
     int i, ended = 0;
-    char t[16];
+    char t[32];
     mono_clear(m);
     snprintf(t, sizeof t, "SONG %d-%d", first + 1, first + 8);
     mono_text(m, 1, 1, t, MONO_FS, 1, 1);
@@ -819,4 +860,83 @@ void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, 
     mono_dots_h(m, 1, 50, 126, 2);
     if (prog >= 0)
         mono_rect(m, 1, 49, (prog > 1000 ? 1000 : prog) * 126 / 1000, 3, 1);
+}
+
+/* ------------------------------------------------------------------ MIDI FX (Session 2) --- */
+/* the selected track's group: the head (MIDI FX, the group, the track), the rail of eight slots (each its effect's
+ * short name; empty: a dotted box; bypassed: crossed; the selected inverted), the selected effect's name and page,
+ * the foot: knobs 1-4's labels and values. g 0: the track is OFF (how to give it a group) */
+static const char *const MFX_SHORT[11] = { "", "ARP", "CHN", "RPT", "HRM", "TRN", "SCL", "RND", "CHD", "MNO", "SEL" };
+static const char *const MFX_LONG[11] = { "EMPTY", "ARP", "CHANCE", "REPEAT", "HARM", "TRANSPOSE", "SCALER", "RANDOM",
+                                          "CHORD", "MONO", "SELECTOR" };
+void scr_mfx(mono_t *m, int g, int track, const uint8_t *type, const uint8_t *byp, int sel, int page, int npages,
+             const char *const *lab, const char (*val)[12], const int *has)
+{
+    char t[24];
+    int i;
+    mono_clear(m);
+    snprintf(t, sizeof t, g ? "MIDI FX  G%d" : "MIDI FX  OFF", g);
+    mono_text(m, 1, 1, t, MONO_FS, 1, 1);
+    snprintf(t, sizeof t, "T%d", track);
+    mono_text(m, 127 - mono_text_w(t, MONO_FS, 1), 1, t, MONO_FS, 1, 1);
+    if (!g) {
+        mono_ctext(m, 64, 24, "NO GROUP", MONO_FB, 1, 1);
+        mono_ctext(m, 64, 40, "HOLD BUTTON 2 + WHEEL", MONO_FS, 1, 1);
+        return;
+    }
+    for (i = 0; i < 8; i++) {                           /* the rail */
+        const int x = i * 16, y = 9, w = 15, h = 11, ty = type[i] < 11 ? type[i] : 0;
+        if (i == sel)
+            mono_rect(m, x, y, w, h, 1);
+        else if (ty)
+            mono_box(m, x, y, w, h, 1);
+        else {
+            mono_dots_h(m, x, y, w, 2), mono_dots_h(m, x, y + h - 1, w, 2);
+            mono_dots_v(m, x, y, h, 2), mono_dots_v(m, x + w - 1, y, h, 2);
+        }
+        if (ty)
+            mono_ctext(m, x + w / 2, y + 3, MFX_SHORT[ty], MONO_FS, 1, i == sel ? 0 : 1);
+        if (ty && byp[i])                               /* (bypassed: crossed) */
+            mono_line(m, x + 1, y + h - 2, x + w - 2, y + 1, i == sel ? 0 : 1);
+    }
+    {
+        const int ty = type[sel & 7] < 11 ? type[sel & 7] : 0;
+        snprintf(t, sizeof t, "%d %s%s", sel + 1, MFX_LONG[ty], ty && byp[sel & 7] ? " (BYP)" : "");
+        mono_text(m, 1, 23, t, MONO_FB, 1, 1);
+        if (npages > 1) {
+            snprintf(t, sizeof t, "%d/%d", page + 1, npages);
+            mono_text(m, 127 - mono_text_w(t, MONO_FS, 1), 24, t, MONO_FS, 1, 1);
+        }
+    }
+    mono_dots_h(m, 0, 33, 128, 2);
+    for (i = 0; i < 4; i++) {                           /* the foot: knobs 1-4 */
+        const int x = i * 32 + 1;
+        if (!has[i] || !lab[i])
+            continue;
+        snprintf(t, sizeof t, "%.5s", lab[i]);
+        mono_text(m, x, 37, t, MONO_FS, 1, 1);
+        snprintf(t, sizeof t, "%.5s", val[i]);
+        mono_text(m, x, 47, t, MONO_FB, 1, 1);
+    }
+}
+
+/* ------------------------------------------------------------------ PROJECTS --- */
+/* the open project: its number of n, its name large, its colour; how the pads work, small */
+void scr_projects(mono_t *m, int num, int n, const char *name, int colour, int used)
+{
+    char t[24];
+    mono_clear(m);
+    snprintf(t, sizeof t, "PROJECT %d/%d", num, n);
+    mono_text(m, 1, 1, t, MONO_FS, 1, 1);
+    snprintf(t, sizeof t, "%d USED", used);
+    mono_text(m, 127 - mono_text_w(t, MONO_FS, 1), 1, t, MONO_FS, 1, 1);
+    mono_text(m, 1, 14, name && name[0] ? name : "UNNAMED", MONO_FB, mono_text_w(name && name[0] ? name : "UNNAMED", MONO_FB, 2) <= 126 ? 2 : 1, 1);
+    if (colour)
+        snprintf(t, sizeof t, "COLOUR: TRACK %d'S", colour);
+    else
+        snprintf(t, sizeof t, "COLOUR: NONE");
+    mono_text(m, 1, 34, t, MONO_FS, 1, 1);
+    mono_dots_h(m, 0, 44, 128, 2);
+    mono_text(m, 1, 48, "TAP: OPEN / NEW", MONO_FS, 1, 1);
+    mono_text(m, 1, 56, "COPY, DELETE + PAD", MONO_FS, 1, 1);
 }

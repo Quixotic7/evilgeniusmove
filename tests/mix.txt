@@ -1,4 +1,5 @@
-# Session's MIX (track button 4 in Session): the top row what is set, the rows below the tracks' columns, the knobs
+# Session's MIX (track button 4 in Session): the top row what is set, the rows below the tracks' columns (the bottom
+# 0, the top 127); a pad held glides the value there, as fast as it is pressed; button 4 again: the top row hidden
 tap 85                   # out of the title
 wait 300
 tap 85                   # PLAY (the meters beside the columns)
@@ -10,21 +11,24 @@ cc 40 0
 wait 100
 state mix
 shot 01-volume
-note 68 100              # track 1's column, the lowest pad: a third
-wait 30
-note 68 0
-note 85 100              # track 2's, the highest: full
-wait 30
-note 85 0
+note 68 127              # track 1's bottom pad, hard, held: down to 0 fast
 wait 400
-state set
-note 68 100              # track 1's lowest, twice: the default
-wait 30
 note 68 0
+state hard-to-0
+note 85 5                # track 2's top pad, lightly, held half a second: up slowly
+wait 500
+state light-slow
+pkt 0A A0 55 7F          # .. pressed hard (aftertouch): fast to 127
+wait 300
+note 85 0
+state pressed-fast
+note 70 100              # track 3's bottom pad, twice: the default
+wait 30
+note 70 0
 wait 60
-note 68 100
+note 70 100
 wait 30
-note 68 0
+note 70 0
 wait 100
 state default
 cc 74 20                 # knob 4: track 4's volume up
@@ -39,15 +43,24 @@ note 93 100              # top pad 2: PAN
 wait 30
 note 93 0
 wait 100
-note 70 100              # track 3's lowest: left
-wait 30
+note 70 127              # track 3's bottom: left; track 8's top: right
+note 91 127
+wait 500
 note 70 0
-note 91 100              # track 8's highest: right
-wait 30
 note 91 0
 wait 100
 state pan
 shot 03-pan
+cc 40 127                # button 4 again: the top row hidden, four rows of columns
+cc 40 0
+wait 100
+note 92 127              # track 1's top pad (row 4): right
+wait 500
+note 92 0
+state hidden-top
+cc 40 127                # .. shown again
+cc 40 0
+wait 100
 note 99 100              # top pad 8: WARP, again GLITCH
 wait 30
 note 99 0
@@ -68,3 +81,19 @@ cc 43 127                # track button 1: CLIPS again
 cc 43 0
 wait 100
 state clips
+cc 40 127                # MIX again; Shift + track 6's top pad: straight to 127
+cc 40 0
+wait 100
+cc 49 127
+note 89 100
+note 89 0
+cc 49 0
+wait 50
+state shift-jump
+cc 14 1                  # the wheel: nothing (MIX stays)
+wait 100
+state wheel-stays
+cc 51 127                # Back: CLIPS
+cc 51 0
+wait 100
+state back-clips
