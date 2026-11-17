@@ -38,6 +38,7 @@
 #include "screens.h"
 #include "perform.h"
 #include "names.h"
+#include "tools.h"
 
 void qd_view_edit(qd_app_t *a, ui_held_t *h, ui_lane_t *l);
 void qd_view_browse(const qd_app_t *a, ui_browse_t *v);        /* .. the preset browser's */    /* view.c: the EDIT view's records (the room's lane) */
@@ -55,22 +56,28 @@ enum { C_OFF = 0, C_GREY = 119, C_LGREY = 118, C_WHITE = 120, C_DKBLUE = 97, C_B
 enum { B_FX, B_SEL, B_ENV, B_LFO, B_EDIT, B_GLO, B_HOME, B_SAVE, B_ARP, B_SEQ, B_PLAY, B_REC, B_OCTDN, B_OCTUP };
 
 enum { MV_IDLE, MV_HOME, MV_SOUND, MV_FX, MV_MIX, MV_BROWSE, MV_CORE };
-enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER, OV_PROJECTS };  /* a page of the Move's own over whatever is up */
+enum { OV_NONE, OV_SETUP, OV_TEMPO, OV_POWER, OV_PROJECTS, OV_TSET, OV_GROOVE, OV_KEYS };  /* a page of the Move's own over whatever is up */
 
 /* Shift + a step button: the Move's own shortcuts, by the icons printed under the steps (0: none there) */
-enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_NEWCLIP, SS_DOUBLE };
+enum { SS_NONE, SS_PROJECTS, SS_SETUP, SS_TEMPO, SS_METRO, SS_MIDIFX, SS_NEWCLIP, SS_DOUBLE, SS_TSET, SS_GROOVE,
+       SS_LAYOUT, SS_KEYS, SS_VEL, SS_TOOLS, SS_QUANT };
 static const uint8_t SHIFT_STEP[16] = {
     SS_PROJECTS,                       /* 1  set overview: the projects */
     SS_SETUP,                          /* 2  setup: the settings, and the way out */
-    SS_NONE, SS_NONE,
+    SS_TSET,                           /* 3  track settings */
+    SS_NONE,
     SS_TEMPO,                          /* 5  tempo */
     SS_METRO,                          /* 6  metronome */
-    SS_NONE, SS_NONE, SS_NONE, SS_NONE,
+    SS_GROOVE,                         /* 7  groove: the swing, which tracks swing */
+    SS_LAYOUT,                         /* 8  layout: the pads in key, chromatic, drums */
+    SS_KEYS,                           /* 9  keys and scales */
+    SS_VEL,                            /* 10 the pads' velocity on / fixed */
     SS_MIDIFX,                         /* 11 arp / repeat: the MIDI FX */
-    SS_NONE, SS_NONE,
+    SS_NONE,
+    SS_TOOLS,                          /* 13 tools */
     SS_NEWCLIP,                        /* 14 new clip: the track's next empty slot chosen */
     SS_DOUBLE,                         /* 15 double loop: the clip doubled */
-    SS_NONE,
+    SS_QUANT,                          /* 16 quantize the clip (held: the amount on the wheel) */
 };
 static const char *const SETUP_ITEMS[] = { "SETTINGS", "EXIT", "CLOSE" };
 enum { SETUP_SETTINGS, SETUP_EXIT, SETUP_CLOSE, SETUP_N };
@@ -237,6 +244,9 @@ static struct {
     /* Session (Menu): the track buttons are its four modes; CLIPS: the pads the clips, 8 tracks x 4 slots from srow,
      * the step buttons in pairs under each track (stop, mute) */
     int jog_touch;                     /* a finger on the wheel (whatever else is touched) */
+    int layout;                        /* the note pads: 0 in key, 1 chromatic, 2 drums (Shift + step 8) */
+    int vel_fixed;                     /* the pads' velocity fixed (Shift + step 10) */
+    int q_amt, q_held, q_used;         /* QUANTIZE (Shift + step 16): its amount %, held, the wheel turned while held */
     unsigned mk_touch, mk_turned;      /* Mute held: the knobs touched (bit n), and turned since (their volume, no mute) */
     /* PROJECTS (Shift + step 1): a project taken by Copy (-1), one armed by Delete (-1); the name ideas knob 1 turns */
     int pj_take, pj_del, pj_nidea, pj_idea;
@@ -365,6 +375,11 @@ static void scn_val(int i, char *v, int cap, int *frac, int brief);
 static const char *const SCN_LAB[8];
 static int sq_on(void);
 static void sq_val(int i, char *v, int cap, int *frac);
+static const char *const TSET_LAB[8];
+static const char *const KEYS_LAB[8];
+static void tset_val(int i, char *v, int cap, int *frac);
+static void keys_val(int i, char *v, int cap, int *frac);
+static int groove_swing(void);
 static int seqp_lab_ok(int i);
 static const char *seqp_lab(int i);
 static void knob_info(int i, kinfo_t *o)
@@ -379,6 +394,25 @@ static void knob_info(int i, kinfo_t *o)
             o->frac = v * 1000 / 127;
             o->ok = 1;
         }
+        return;
+    }
+    if ((S.over == OV_TSET || S.over == OV_KEYS) && i >= 0 && i < 8) {   /* TRACK SETTINGS, KEYS & SCALES */
+        const char *lab = S.over == OV_TSET ? TSET_LAB[i] : KEYS_LAB[i];
+        if (lab[0]) {
+            snprintf(o->name, sizeof o->name, "T%d %s", A.sel + 1, lab);
+            if (S.over == OV_TSET)
+                tset_val(i, o->val, sizeof o->val, &o->frac);
+            else
+                keys_val(i, o->val, sizeof o->val, &o->frac);
+            o->ok = 1;
+        }
+        return;
+    }
+    if (S.over == OV_GROOVE && i == 0) {                /* GROOVE: the swing */
+        snprintf(o->name, sizeof o->name, "SWING");
+        snprintf(o->val, sizeof o->val, "%d%%", groove_swing());
+        o->frac = (groove_swing() - 50) * 1000 / 30;
+        o->ok = 1;
         return;
     }
     if (S.over == OV_PROJECTS && (i == 0 || i == 1)) {  /* PROJECTS: the open one's name, colour */
@@ -936,6 +970,7 @@ static void new_clip(void)
  * clip copied, then pasted where tapped; Delete held: cut, then pasted where tapped (not pasted: deleted) */
 static void note_pad(int idx, int vel);
 static void scene_launch(int k);
+static void scene_duplicate(void);
 static void clip_pad(int idx, int down)
 {
     const int t = idx % 8, slot = S.srow + 3 - idx / 8;
@@ -1032,6 +1067,13 @@ static void tsound_sync(int k, int t, const qd_pattern_t *E)   /* pattern k's so
         P->snd[t] = E->snd[t];
     if (P->trk[t].mfx != E->trk[t].mfx)                 /* (the MIDI FX group too: the track's, not a clip's) */
         P->trk[t].mfx = E->trk[t].mfx;
+    {   /* .. and the track's settings (its key, MIDI channel, voices, swing, MIDI out): a clip keeps only its own
+         * pages, rate and step defaults */
+        qd_tset_t *d = &P->trk[t];
+        const qd_tset_t *e = &E->trk[t];
+        d->chan = e->chan, d->limit = e->limit, d->reserve = e->reserve, d->swing = e->swing;
+        d->scale = e->scale, d->root = e->root, d->key_global = e->key_global, d->mout = e->mout;
+    }
 }
 
 /* MIDI FX opened on a track with no group: the first group no track uses is its own (else the first) */
@@ -1334,6 +1376,34 @@ static void scene_launch(int k)                         /* by hand: the song giv
     S.song_on = 0;
     scene_start(k, scene_x(k), A.proj.scene[k].repeats);
     clip_say("SCENE", k + 1);
+}
+
+/* Shift + Copy in CLIPS: the scene playing (else the selected track's clip's row) into the next scene with no clip,
+ * every track's part, an undo level; it launches */
+static void scene_duplicate(void)
+{
+    const int from = S.run >= 0 ? S.run : edit_clip(A.sel);
+    int to = -1, k, t;
+    char v[24];
+    if (from < 0 || from >= QD_NSCENE)
+        return;
+    for (k = from + 1; k < QD_NSCENE && to < 0; k++)
+        if (!scene_used(k))
+            to = k;
+    if (to < 0) {
+        show_name("NO EMPTY SCENE");
+        return;
+    }
+    clip_undo_begin(to, QD_UK_PASTE);
+    for (t = 0; t < QD_TRACKS; t++)
+        qd_track_copy(qd_proj_pat(&A.proj, to), t, qd_proj_cpat(&A.proj, from), t);
+    clip_undo_end();
+    A.proj.scene[to] = A.proj.scene[from];
+    scene_start(to, scene_x(to), A.proj.scene[to].repeats);
+    if (to >= S.srow + 4)
+        S.srow = to > NSLOT - 4 ? NSLOT - 4 : to - 3;
+    snprintf(v, sizeof v, "SCENE %d > %d", from + 1, to + 1);
+    show_name(v);
 }
 
 static uint32_t rnd(uint32_t n)                         /* (deterministic: the tests' runs repeat) */
@@ -1861,6 +1931,9 @@ static void mod_map(int i, int d)
 }
 
 static void pj_knob(int i, int d);
+static void tset_knob(int i, int d);
+static void keys_knob(int i, int d);
+static void groove_knob(int i, int d);
 static void knob(int i, int delta)
 {
     const int d = detents(i, delta, KNOB_DIV);
@@ -1884,6 +1957,18 @@ static void knob(int i, int delta)
     S.turn_ms = S.now ? S.now : 1;
     if (d && S.over == OV_PROJECTS) {                   /* PROJECTS: the open one's name, colour */
         pj_knob(i, d);
+        return;
+    }
+    if (d && S.over == OV_TSET) {                       /* the Shift pages' knobs */
+        tset_knob(i, d);
+        return;
+    }
+    if (d && S.over == OV_KEYS) {
+        keys_knob(i, d);
+        return;
+    }
+    if (d && S.over == OV_GROOVE) {
+        groove_knob(i, d);
         return;
     }
     if (d && S.mute_down && i < QD_TRACKS) {            /* Mute held: knob i track i's volume (touched alone: its mute) */
@@ -1958,6 +2043,16 @@ static void wheel(int delta)
 {
     const int d = detents(8, delta, 1);
     if (!d)
+        return;
+    if (S.q_held) {                                     /* QUANTIZE held: its amount */
+        char v[20];
+        S.q_amt = clamp(S.q_amt + d * 5, 0, 100);
+        S.q_used = 1;
+        snprintf(v, sizeof v, "QUANTIZE %d%%", S.q_amt);
+        show_name(v);
+        return;
+    }
+    if (S.over >= OV_PROJECTS)                          /* (the Shift pages, PROJECTS: the wheel does nothing) */
         return;
     if (S.over == OV_SETUP) {
         S.menu_sel = S.menu_sel + d < 0 ? 0 : S.menu_sel + d >= SETUP_N ? SETUP_N - 1 : S.menu_sel + d;
@@ -2204,6 +2299,155 @@ static void pj_knob(int i, int d)
         qd_proj_colour(&A, p, clamp(A.per.pcol[p] + d, 0, 8));
 }
 
+/* ------------------------------------------------------------------ the Shift pages --- */
+/* TRACK SETTINGS (Shift + step 3): the selected track's, one a knob (the core's three SEL pages' less the key, the
+ * swing and the MIDI FX group, which have pages of their own): KEY (global / its own), MIDI CH, VOICES, page FOLLOW,
+ * KIND, NAME (a turn: another), ENGINE, MIDI OUT. They are the track's (every clip of it: tsound_sync) */
+static const char *const TSET_LAB[8] = { "KEY", "MIDI CH", "VOICES", "FOLLOW", "KIND", "NAME", "ENGINE", "OUT CH" };
+static const char *const ENGINE_NAME[3] = { "SID", "S+MIDI", "MIDI" };
+static void tset_knob(int i, int d)
+{
+    qd_tset_t *ts = &qd_ctl_pat(&A)->trk[A.sel];
+    qd_track_t *tk = &A.model.t[A.sel];
+    switch (i) {
+    case 0:                                             /* (its own key back; never set: a copy of the global one) */
+        if (d > 0 && ts->key_global && ts->scale == QD_SCALE_CHROMATIC && !ts->root)
+            ts->scale = A.proj.key_scale, ts->root = A.proj.key_root;
+        ts->key_global = d < 0;
+        break;
+    case 1: ts->chan = (uint8_t)clamp(ts->chan + d, 0, 15); break;
+    case 2:
+        ts->limit = (uint8_t)clamp((ts->limit > QD_POOL_LIMIT_MAX ? QD_POOL_LIMIT_MAX : ts->limit) + d, 1, QD_POOL_LIMIT_MAX);
+        break;
+    case 3: A.ui.follow = d > 0, A.ui.play_page[A.sel] = -1; break;
+    case 4: qd_track_set_kind(tk, tk->kind < 7 ? clamp(tk->kind + d, 0, 6) : d > 0 ? 0 : 6); break;
+    case 5: {
+        static uint32_t seed = 0x7A3Eu;
+        char nm[QD_NAME_MAX + 1];
+        seed ^= S.now | 1u;
+        qd_name_track_roll(&seed, tk->kind, tk->name, nm);
+        snprintf(tk->name, sizeof tk->name, "%s", nm);
+        tk->named = 1;
+        break;
+    }
+    case 6: qd_trk_engine_set(&A, A.sel, clamp(qd_trk_engine(&A, A.sel) + d, 0, 2)); break;
+    default: ts->mout = (uint8_t)((ts->mout & QD_MOUT_FM) | clamp((ts->mout & QD_MOUT_CH) + d, 0, 16)); break;
+    }
+}
+static void tset_val(int i, char *v, int cap, int *frac)
+{
+    const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+    const qd_track_t *tk = &A.model.t[A.sel];
+    *frac = -1;
+    switch (i) {
+    case 0: snprintf(v, (size_t)cap, ts->key_global ? "GLB" : "OWN"); break;
+    case 1: snprintf(v, (size_t)cap, "%d", ts->chan + 1); break;
+    case 2: snprintf(v, (size_t)cap, "%d", ts->limit), *frac = ts->limit * 1000 / QD_POOL_LIMIT_MAX; break;
+    case 3: snprintf(v, (size_t)cap, A.ui.follow ? "ON" : "OFF"); break;
+    case 4: snprintf(v, (size_t)cap, "%s", tk->kind < 7 ? qd_track_kind_name(tk->kind) : "NONE"); break;
+    case 5: snprintf(v, (size_t)cap, "%s", tk->name); break;
+    case 6: snprintf(v, (size_t)cap, "%s", ENGINE_NAME[clamp(qd_trk_engine(&A, A.sel), 0, 2)]); break;
+    default:
+        if (ts->mout & QD_MOUT_CH)
+            snprintf(v, (size_t)cap, "%d", ts->mout & QD_MOUT_CH);
+        else
+            snprintf(v, (size_t)cap, "OFF");
+        break;
+    }
+}
+
+/* KEYS & SCALES (Shift + step 9): the selected track's key: MODE (global / its own), SCALE, ROOT (global: the
+ * project's key, which every track following it plays) */
+static const char *const KEYS_LAB[8] = { "MODE", "SCALE", "ROOT", "", "", "", "", "" };
+static const char *const NOTE_NAME[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static void keys_knob(int i, int d)
+{
+    qd_tset_t *ts = &qd_ctl_pat(&A)->trk[A.sel];
+    uint8_t *sc = ts->key_global ? &A.proj.key_scale : &ts->scale, *rt = ts->key_global ? &A.proj.key_root : &ts->root;
+    if (i == 0)
+        tset_knob(0, d);
+    else if (i == 1)
+        *sc = (uint8_t)clamp(*sc + d, 0, QD_NSCALE - 1);
+    else if (i == 2)
+        *rt = (uint8_t)(((*rt + d) % 12 + 12) % 12);
+}
+static void keys_val(int i, char *v, int cap, int *frac)
+{
+    int scale, root;
+    qd_track_key(&A.proj, qd_ctl_cpat(&A), A.sel, &scale, &root);
+    *frac = -1;
+    v[0] = 0;
+    if (i == 0)
+        snprintf(v, (size_t)cap, qd_ctl_cpat(&A)->trk[A.sel].key_global ? "GLB" : "OWN");
+    else if (i == 1)
+        snprintf(v, (size_t)cap, "%.12s", qd_scale_name(scale));
+    else if (i == 2)
+        snprintf(v, (size_t)cap, "%s", NOTE_NAME[root % 12]);
+}
+
+/* GROOVE (Shift + step 7): knob 1 the swing (every scene's, as one); the lowest pad row the tracks, each swinging or
+ * not (lit: it swings) */
+static int groove_swing(void) { return qd_proj_cpat(&A.proj, A.seq.cur)->swing; }
+static void groove_knob(int i, int d)
+{
+    int k;
+    if (i)
+        return;
+    {
+        const int sw = clamp(groove_swing() + d, 50, 80);
+        for (k = 0; k < QD_NSCENE; k++)
+            qd_proj_pat(&A.proj, k)->swing = (uint8_t)sw;
+    }
+}
+static void groove_pad(int idx, int down)
+{
+    if (!down || idx >= 8 || idx >= QD_TRACKS)
+        return;
+    {
+        qd_tset_t *ts = &qd_ctl_pat(&A)->trk[idx];
+        char v[20];
+        ts->swing = !ts->swing;
+        snprintf(v, sizeof v, "T%d SWING %s", idx + 1, ts->swing ? "ON" : "OFF");
+        show_name(v);
+    }
+}
+
+/* QUANTIZE (Shift + step 16): the selected track's clip, every trig's micro timing moved amt % of the way to its step
+ * (the core's QUANTIZE tool on the whole clip; undo takes it back). Held: the wheel sets the amount, let go: done */
+static void quantize_clip(void)
+{
+    static uint8_t pos[QD_NSTEP];
+    char v[20];
+    int k;
+    for (k = 0; k < QD_NSTEP; k++)
+        pos[k] = (uint8_t)k;
+    qd_undo_close(&A);
+    qd_undo_input(&A, 0);
+    qd_undo_hint(&A, QD_UK_EDIT);
+    qd_tl_quantize(qd_ctl_pat(&A), A.sel, pos, QD_NSTEP, QD_QG_1, S.q_amt, 0);
+    qd_undo_close(&A);
+    snprintf(v, sizeof v, "QUANTIZED %d%%", S.q_amt);
+    show_name(v);
+}
+
+/* a shortcut's page or setting up (its icon bright) */
+static int ss_open(int i)
+{
+    switch (SHIFT_STEP[i]) {
+    case SS_SETUP: return S.over == OV_SETUP;
+    case SS_TEMPO: return S.over == OV_TEMPO;
+    case SS_PROJECTS: return S.over == OV_PROJECTS;
+    case SS_TSET: return S.over == OV_TSET;
+    case SS_GROOVE: return S.over == OV_GROOVE;
+    case SS_KEYS: return S.over == OV_KEYS;
+    case SS_VEL: return S.vel_fixed;
+    case SS_LAYOUT: return S.layout != 0;
+    case SS_METRO: return A.metro;
+    case SS_QUANT: return S.q_held;
+    default: return 0;
+    }
+}
+
 /* Shift + a step: the Move's shortcut there */
 static void shift_step(int i)
 {
@@ -2217,6 +2461,32 @@ static void shift_step(int i)
     case SS_NEWCLIP: new_clip(); break;
     case SS_PROJECTS: pj_open(); break;
     case SS_MIDIFX: tap(B_ARP); break;                  /* the MIDI FX page (the core's ARP, tapped) */
+    case SS_TSET: S.over = S.over == OV_TSET ? OV_NONE : OV_TSET; break;
+    case SS_GROOVE: S.over = S.over == OV_GROOVE ? OV_NONE : OV_GROOVE; break;
+    case SS_KEYS: S.over = S.over == OV_KEYS ? OV_NONE : OV_KEYS; break;
+    case SS_LAYOUT: {
+        static const char *const LN[3] = { "PADS IN KEY", "PADS CHROMATIC", "PADS: DRUMS" };
+        S.layout = (S.layout + 1) % 3;
+        show_name(LN[S.layout]);
+        break;
+    }
+    case SS_VEL:
+        S.vel_fixed = !S.vel_fixed;
+        show_name(S.vel_fixed ? "VELOCITY FIXED" : "VELOCITY");
+        break;
+    case SS_TOOLS:                                      /* (a Sequence mode: from Session, Sequence) */
+        if (S.session)
+            sess_toggle();
+        S.seq_mode = SQ_TOOLS;
+        seq_go(SQ_TOOLS);
+        break;
+    case SS_QUANT: {                                    /* held: the wheel the amount; let go: done */
+        char v[20];
+        S.q_held = 1, S.q_used = 0;
+        snprintf(v, sizeof v, "QUANTIZE %d%%", S.q_amt);
+        show_name(v);
+        break;
+    }
     default: break;
     }
 }
@@ -2226,6 +2496,12 @@ static int pad_note(int idx)
 {
     int scale, root;
     qd_track_key(&A.proj, qd_ctl_cpat(&A), A.sel, &scale, &root);
+    if (S.layout == 2) {                                /* DRUMS: two 4 x 4 blocks from C (the left's top, the right's on) */
+        const int n = 36 + 12 * S.oct + (idx / 8) * 4 + idx % 4 + (idx % 8 >= 4 ? 16 : 0);
+        return n < 0 ? 0 : n > 127 ? 127 : n;
+    }
+    if (S.layout == 1)                                  /* CHROMATIC: every note, a row up a fourth */
+        scale = QD_SCALE_CHROMATIC;
     return qd_scale_note(scale, root, PAD_OCT + S.oct, (idx / 8) * (qd_scale_size(scale) >= 12 ? 5 : 3) + idx % 8);
 }
 
@@ -2238,6 +2514,8 @@ static int pad_is_root(int idx)
 
 static void note_pad(int idx, int vel)
 {
+    if (vel > 0 && S.vel_fixed)                         /* (velocity off: every note at full) */
+        vel = 127;
     if (vel > 0) {
         const int n = pad_note(idx);
         if (S.pad_note[idx] >= 0)
@@ -2433,6 +2711,10 @@ static void surface_note(int note, int vel)
                 shift_step(i);
         } else if (!down && (step_eaten >> i & 1u)) {
             step_eaten &= (uint16_t)~(1u << i);
+            if (SHIFT_STEP[i] == SS_QUANT && S.q_held) {
+                S.q_held = 0;
+                quantize_clip();
+            }
         } else
             qd_app_key(&A, QD_WHITE_KEY[i], down, STEP_VEL);
         return;
@@ -2441,6 +2723,10 @@ static void surface_note(int note, int vel)
         const int idx = note - N_PAD0;                  /* row 0 the bottom */
         if (S.over == OV_PROJECTS) {                    /* PROJECTS: the 32 projects */
             pj_pad(idx, down);
+            return;
+        }
+        if (S.over == OV_GROOVE && idx < 8) {           /* GROOVE: the lowest row the tracks' swing */
+            groove_pad(idx, down);
             return;
         }
         if (clips_on()) {                               /* CLIPS: all four rows the clips */
@@ -2621,8 +2907,12 @@ static void surface_cc(int cc, int v)
                                                          * mode: held, a page tapped is copied, then pasted */
         S.copy_down = down;
         if (clips_on() || (!down && S.cl_take >= 0)) {  /* CLIPS: held, a clip tapped is copied, then pasted; tapped
-                                                         * alone, the selected clip duplicated into the next empty slot */
-            if (down)
+                                                         * alone, the selected clip duplicated into the next empty slot;
+                                                         * Shift: the scene playing into the next empty scene */
+            if (down && S.shift && clips_on()) {
+                S.copy_used = 1;
+                scene_duplicate();
+            } else if (down)
                 S.copy_used = 0;
             else if (!S.copy_used && clips_on())
                 clip_duplicate();
@@ -2665,8 +2955,15 @@ static void surface_cc(int cc, int v)
         if (down) {
             if (A.ui.rec)
                 qd_rec_toggle(&A);
-            else
+            else {
+                if (S.shift && A.sel < QD_TRACKS) {     /* Shift: afresh, the selected track's clip cleared first */
+                    clip_undo_begin(A.seq.cur, QD_UK_CLEAR);
+                    qd_track_clear(qd_proj_pat(&A.proj, A.seq.cur), A.sel);
+                    clip_undo_end();
+                    show_name("RECORD AFRESH");
+                }
                 qd_rec_arm_live(&A);
+            }
         }
         break;
     case CC_UP:                                         /* F2. Shift: the pads an octave up (the core's own page: its window).
@@ -2695,8 +2992,8 @@ static void surface_cc(int cc, int v)
             }
             break;
         }
-        if (down) {
-            const int pg = A.ui.page[A.sel] + (cc == CC_RIGHT ? 1 : -1);
+        if (down) {                                     /* (Shift: the first page, the last) */
+            const int pg = S.shift ? (cc == CC_RIGHT ? trk_npage() - 1 : 0) : A.ui.page[A.sel] + (cc == CC_RIGHT ? 1 : -1);
             char nm[16];
             qd_ctl_set_page(&A, pg);
             snprintf(nm, sizeof nm, "PAGE %d", (A.ui.page[A.sel] + 1) % 100);
@@ -2933,13 +3230,17 @@ static void leds(void)
             led_note(N_STEP0 + i, C_OFF);
         else if (S.shift)                               /* Shift: the steps that are shortcuts, the open one bright */
             led_note(N_STEP0 + i, (uint8_t)(!SHIFT_STEP[i] ? C_OFF
-                                            : (SHIFT_STEP[i] == SS_SETUP && S.over == OV_SETUP) ||
-                                              (SHIFT_STEP[i] == SS_TEMPO && S.over == OV_TEMPO) ? C_WHITE : C_LTBLUE));
+                                            : ss_open(i) ? C_WHITE : C_LTBLUE));
         else
             led_note(N_STEP0 + i, shade(L.key[QD_WHITE_KEY[i]], C_GREY, C_LGREY, C_WHITE));
     }
     for (i = 0; i < 32; i++) {                          /* the note pads: struck white, a root green, the rest dim (the
                                                          * top row too while it is hidden) */
+        if (S.over == OV_GROOVE) {                      /* GROOVE: the lowest row the tracks (lit: swinging) */
+            led_note(N_PAD0 + i, (uint8_t)(i >= 8 || i >= QD_TRACKS ? C_OFF
+                                           : qd_ctl_cpat(&A)->trk[i].swing ? TRK_COL[i] : TRK_DIM[i]));
+            continue;
+        }
         if (S.over == OV_PROJECTS) {                    /* PROJECTS: each in its colour (none: light grey), the open one
                                                          * white, empty dark; Copy's taken one, Delete's armed blinking */
             const int p = pj_at(i), c = p < QD_NPROJ ? A.per.pcol[p] : 0;
@@ -3023,7 +3324,8 @@ static void leds(void)
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
                                                                  : pad_is_root(i) ? C_GREEN : C_GREY));
     }
-    for (i = 0; i < 8 && top_row_on() && !clips && !mix && !scn && !arr && !sq && S.over != OV_PROJECTS; i++) {
+    for (i = 0; i < 8 && top_row_on() && !clips && !mix && !scn && !arr && !sq && S.over != OV_PROJECTS && S.over != OV_GROOVE;
+         i++) {
         uint8_t c;
         if (S.mute_down)                                /* Mute held: the tracks, a muted one red, a soloed one yellow */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.solo >> i & 1u) ? C_YELLOW : (A.seq.mute >> i & 1u) ? C_RED
@@ -3051,8 +3353,7 @@ static void leds(void)
     for (i = 0; i < 16; i++)                            /* the icons under the steps (white, CC 16-31): Shift held, the
                                                          * shortcuts there lit, the one open bright */
         led_cc(CC_STEP_ICON0 + i, (uint8_t)(!S.shift || !SHIFT_STEP[i] || S.mode == MV_IDLE ? 0
-                                            : (SHIFT_STEP[i] == SS_SETUP && S.over == OV_SETUP) ||
-                                              (SHIFT_STEP[i] == SS_TEMPO && S.over == OV_TEMPO) ? 124 : 64));
+                                            : ss_open(i) ? 124 : 64));
     led_cc(CC_SHIFT, (uint8_t)(S.shift ? 124 : 16));
     led_cc(CC_MENU, (uint8_t)(S.session ? 124 : white(L.button[B_HOME])));
     led_cc(CC_BACK, (uint8_t)(S.over || (S.mode != MV_HOME && S.mode != MV_IDLE) ? 64 : 6));
@@ -3114,6 +3415,7 @@ void egm_init(const char *flash_path)
     memset(S.tsel, -1, sizeof S.tsel);
     memset(S.mxg_row, -1, sizeof S.mxg_row);
     S.mod_hold = -1;
+    S.q_amt = 100;
     S.run = -1;
     S.rng = 0x45474D31u;                                /* ("EGM1") */
     for (i = 0; i < 6; i++)
@@ -3295,6 +3597,27 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (S.over == OV_TSET || S.over == OV_KEYS) {       /* TRACK SETTINGS, KEYS & SCALES: the all-eight */
+        static char val[8][16];
+        const char *lab[8], *vp[8];
+        int frac[8], i;
+        for (i = 0; i < 8; i++) {
+            if (S.over == OV_TSET)
+                tset_val(i, val[i], sizeof val[i], &frac[i]), lab[i] = TSET_LAB[i];
+            else
+                keys_val(i, val[i], sizeof val[i], &frac[i]), lab[i] = KEYS_LAB[i];
+            vp[i] = val[i];
+        }
+        scr_eight(m, lab, vp, frac, 8);
+        return;
+    }
+    if (S.over == OV_GROOVE) {                          /* GROOVE: the swing, the tracks that swing */
+        int on[8], t;
+        for (t = 0; t < 8; t++)
+            on[t] = t < QD_TRACKS && qd_ctl_cpat(&A)->trk[t].swing;
+        scr_groove(m, groove_swing(), on, QD_TRACKS < 8 ? QD_TRACKS : 8);
+        return;
+    }
     if (S.over == OV_PROJECTS) {                        /* PROJECTS: the open one */
         int k, used = 0;
         for (k = 0; k < QD_NPROJ; k++)
@@ -3584,6 +3907,13 @@ void egm_describe(char *out, int cap)
              qd_seq_bpm(&A.seq), A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.seq.solo,
              A.ui.page[A.sel] + 1, S.shift, SQ_NAME[S.seq_mode], top_row_on() ? "on" : "hidden");
     snprintf(out + strlen(out), (size_t)cap - strlen(out), " bar=%d", (int)(A.seq.tick / (16 * (int64_t)QD_TPS)) + 1);
+    {   /* the Shift pages' settings: the layout, velocity fixed, QUANTIZE's amount; the selected track's channel, voices,
+         * MIDI out, key mode, swing (the clip's) and every scene's swing */
+        const qd_tset_t *ts = &qd_ctl_cpat(&A)->trk[A.sel];
+        snprintf(out + strlen(out), (size_t)cap - strlen(out), " layout=%d velfix=%d qamt=%d tset=%d,%d,%d,%d,%d,%d",
+                 S.layout, S.vel_fixed, S.q_amt, ts->chan + 1, ts->limit, ts->mout & QD_MOUT_CH, ts->key_global, ts->swing,
+                 qd_ctl_cpat(&A)->swing);
+    }
     {   /* PROJECTS: the open one, its name and colour; those used (bit p) */
         uint32_t used = 0;
         int k;

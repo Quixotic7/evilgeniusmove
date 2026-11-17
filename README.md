@@ -79,7 +79,7 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | Move | Does |
 |---|---|
 | 16 step buttons | the steps: tap, hold to edit, as the FM-1's W1-W16. In page mode: the clip's 16 pages (below) |
-| Shift + step 1 / 2 / 5 / 6 / 11 / 14 / 15 | projects / setup (settings, exit) / tempo / metronome / MIDI FX / new clip (the selected track's next empty slot chosen; a step put there launches it) / double loop. Shift held lights the icons under those steps (the open one bright) |
+| Shift + a step | the icons printed under the steps: 1 projects / 2 setup (settings, exit) / 3 TRACK SETTINGS (key mode, MIDI channel, voices, page follow, kind, name, engine, MIDI out channel) / 5 tempo / 6 metronome / 7 GROOVE (knob 1 the swing; the lowest pad row: which tracks swing) / 8 the pad layout (in key, chromatic, drums) / 9 KEYS & SCALES (mode, scale, root) / 10 velocity fixed on / off / 11 MIDI FX / 13 TOOLS / 14 new clip / 15 double loop / 16 QUANTIZE the clip (held: the wheel the amount; let go: done; undo takes it back). Shift held lights those icons, an open page's bright. A track's settings are the track's in every clip |
 | Top pad row | the mode's shortcuts (below). Hidden: a fourth row of notes |
 | Lower three pad rows | notes in the track's scale; a row up is a fourth up (Shift + - / +: octave) |
 | Knobs 1-8 | the open page's values; touch or turn for the name and value full screen. At home: velocity, length, micro, ratchet, chance, condition, trig, slide of the held step (none held: the track's defaults); Shift + a knob: its second value. A track pad held: its sends (CHORUS, ECHO, ROOM, CRUSH, ROBOT, WARP, GLITCH, TV) |
@@ -114,6 +114,9 @@ The hook exists only while `/dev/shm/egm-test` does (a reboot clears it). The sa
 | ENV / LFO held + a knob, in TRIG / SOUND | the mod matrix: the envelope or LFO last chosen on that pad modulates the knob's value, the turn its depth (pop-up ENV1>CUTOFF +31; NO MOD: a value nothing can modulate). Each is one of the sound's eight modulation slots (sources now also ENV 1-3, LFO 1-3); a tap on ENV / LFO still turns their pages |
 | Shift + step 1 | PROJECTS: the 32 projects on the pads (1-8 the top row; the open one white, the others in their colours). Tap: open it; an empty pad: a new project there. Copy held + a project, then an empty pad: copied. Delete held + a project, twice: deleted. Knob 1: the open project's name (ideas), knob 2: its colour. Back: closed |
 | A finger on the wheel | the knobs turned keep the all-eight view (no single pop-up) |
+| Shift + Left / Right | the first page, the last |
+| Shift + Rec | record afresh: the selected track's clip cleared (undo brings it back), then armed |
+| Shift + Copy, in CLIPS | the scene playing (else the selected clip's row) into the next empty scene, launched |
 | Volume (the main knob) | the output level; its pop-up while it turns (VOLUME and a percent) |
 | The idle screen (the brain) | any pad, step or button press wakes it and does nothing else |
 | SEQ (Session, from the belt) | the wheel: TIME (TEMPO, SWING: every scene's, LAUNCH quantize, METRO, CLICK level), REC (MODE live / step, QUANT, TAKE overdub / replace, AUTOmation), CLOCK (CLK OUT, CC OUT). Steps 1-16: launch scenes 1-16. Back: the belt |

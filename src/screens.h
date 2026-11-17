@@ -70,6 +70,8 @@ void scr_menu(mono_t *m, const char *const *items, int n, int sel);
 /* MIDI FX: the group's eight slots, the selected effect and page, knobs 1-4's labels and values (g 0: OFF) */
 void scr_mfx(mono_t *m, int g, int track, const uint8_t *type, const uint8_t *byp, int sel, int page, int npages,
              const char *const *lab, const char (*val)[12], const int *has);
+/* GROOVE: the swing, the tracks that swing */
+void scr_groove(mono_t *m, int swing, const int *on, int n);
 /* PROJECTS: the open project (num of n), its name, its colour (0 none), the projects used */
 void scr_projects(mono_t *m, int num, int n, const char *name, int colour, int used);
 /* Session's page belt: the pages as boxes on a belt, the chosen one large, its name under it */

@@ -574,6 +574,16 @@ compiles.
     when MIDI FX opens; knob 6 changes it. Knob 1 on an empty slot picks its effect (no slot held), turning on through
     the effects; the empty slot's screen says so. Test: `tests/midifx2.txt`.
   - **Sound locks:** the demo's locked drums stay as they are (a new project to play in).
+- **The Shift shortcuts (17 November 2026):** every printed icon under the steps now does its job. 3 TRACK SETTINGS
+  (the core's three SEL pages on one: key mode, MIDI channel, voices, page follow, kind, name, engine, MIDI out), 7
+  GROOVE (the swing for every scene; the lowest pad row which tracks swing), 8 the pad layout (in key, chromatic,
+  drums: two 4 x 4 blocks from C), 9 KEYS & SCALES (mode, scale, root), 10 velocity fixed, 13 TOOLS (from Session:
+  Sequence), 16 QUANTIZE (the clip's micro timing to its steps, the core's tool; held: the wheel the amount). A track's
+  settings (key, channel, voices, swing, MIDI out) now follow the track into every clip, as its sound and MIDI FX
+  group do. Shift + Left / Right: the first page, the last; Shift + Rec: afresh (the clip cleared, then armed);
+  Shift + Copy in CLIPS: the scene into the next empty one. *Left as decided:* Shift + Loop stays the scene page,
+  Shift + Play in Session stops every clip, Shift + Delete clears the track (twice). The sound-lock layout waits for
+  the sound-lock keys. Tests: `tests/shortcuts.txt`, `shortcuts2.txt`.
   - **MIDI FX** is drawn for this screen (the core's page cropped showed its top only); the selected slot tapped
     again keeps its page (the wheel turns pages), so two taps only bypass.
   - **PROJECTS** (Shift + step 1) is the design's: 32 projects on the pads (the core now keeps 32 on the Move: the
@@ -588,7 +598,7 @@ compiles.
 
 **Not built yet:**
 
-1. **Sequence's page belt**, the sound-lock keys, the Trig page on pad 1.
+1. **Sequence's page belt**, the sound-lock keys (and their pad layout), the Trig page on pad 1.
 
 **17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
 evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this

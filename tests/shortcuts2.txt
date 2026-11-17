@@ -1,0 +1,40 @@
+# Shift + Right / Left: the last page, the first; Shift + Rec: the clip cleared, recording armed; Shift + Copy in
+# CLIPS: the scene into the next empty scene
+tap 85                   # out of the title
+wait 300
+note 95 100              # track 4 (two pages)
+note 95 0
+wait 100
+cc 49 127                # Shift + Right: the last page
+cc 63 127
+cc 63 0
+cc 49 0
+wait 100
+state last-page
+cc 49 127                # Shift + Left: the first
+cc 62 127
+cc 62 0
+cc 49 0
+wait 100
+state first-page
+cc 49 127                # Shift + Rec: track 4's clip cleared, armed
+cc 86 127
+cc 86 0
+cc 49 0
+wait 100
+state rec-afresh
+cc 86 127                # Rec again: off
+cc 86 0
+cc 56 127                # Undo: the clip back
+cc 56 0
+wait 100
+state undone
+cc 50 127                # Session: Shift + Copy: scene 1 into the next empty one
+cc 50 0
+wait 100
+cc 49 127
+cc 60 127
+cc 60 0
+cc 49 0
+wait 300
+state scene-dup

@@ -946,3 +946,27 @@ void scr_projects(mono_t *m, int num, int n, const char *name, int colour, int u
     mono_text(m, 1, 48, "TAP: OPEN / NEW", MONO_FS, 1, 1);
     mono_text(m, 1, 56, "COPY, DELETE + PAD", MONO_FS, 1, 1);
 }
+
+/* ------------------------------------------------------------------ GROOVE --- */
+/* the swing (50..80 %) large, its bar; the eight tracks, a box each, filled where it swings */
+void scr_groove(mono_t *m, int swing, const int *on, int n)
+{
+    char t[16];
+    int i;
+    mono_clear(m);
+    mono_text(m, 1, 1, "GROOVE", MONO_FS, 1, 1);
+    snprintf(t, sizeof t, "SWING %d%%", swing);
+    mono_text(m, 1, 12, t, MONO_FB, 2, 1);
+    mono_box(m, 1, 30, 126, 6, 1);
+    mono_rect(m, 1, 30, 1 + (swing - 50) * 125 / 30, 6, 1);
+    for (i = 0; i < n && i < 8; i++) {
+        const int x = i * 16 + 1;
+        char num[2] = { (char)('1' + i), 0 };
+        if (on[i])
+            mono_rect(m, x, 42, 13, 13, 1);
+        else
+            mono_box(m, x, 42, 13, 13, 1);
+        mono_ctext(m, x + 6, 45, num, MONO_FS, 1, on[i] ? 0 : 1);
+    }
+    mono_text(m, 1, 58, "PADS: WHICH TRACKS SWING", MONO_FS, 1, 1);
+}

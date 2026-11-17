@@ -1,0 +1,80 @@
+# the Shift + step shortcuts: 3 track settings, 7 groove, 8 layout, 9 keys & scales, 10 velocity, 13 tools, 16 quantize
+tap 85                   # out of the title
+wait 300
+cc 49 127                # Shift + step 3: TRACK SETTINGS
+note 18 100
+note 18 0
+cc 49 0
+wait 100
+state tset
+shot 01-tset
+cc 72 4                  # MIDI CH 2, VOICES down 1, MIDI OUT 3
+cc 73 124
+cc 78 4
+cc 78 4
+cc 78 4
+wait 100
+state tset-set
+cc 51 127                # Back: closed
+cc 51 0
+wait 100
+cc 49 127                # Shift + step 9: KEYS & SCALES; SCALE: MAJOR, ROOT: D
+note 24 100
+note 24 0
+cc 49 0
+wait 100
+cc 71 4
+cc 72 4
+cc 73 4
+cc 73 4
+wait 100
+state keys
+shot 02-keys
+cc 51 127
+cc 51 0
+cc 49 127                # Shift + step 7: GROOVE; swing up, tracks 1 and 3 swing
+note 22 100
+note 22 0
+cc 49 0
+wait 100
+cc 71 4
+cc 71 4
+note 68 100
+note 68 0
+note 70 100
+note 70 0
+wait 100
+state groove
+shot 03-groove
+cc 51 127
+cc 51 0
+cc 49 127                # Shift + step 8: chromatic; again: drums
+note 23 100
+note 23 0
+note 23 100
+note 23 0
+note 25 100              # Shift + step 10: velocity fixed
+note 25 0
+cc 49 0
+wait 100
+state layout-vel
+cc 49 127                # Shift + step 16 held + the wheel: 60%; let go: quantized
+note 31 100
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+note 31 0
+cc 49 0
+wait 100
+state quantized
+cc 49 127                # Shift + step 13: TOOLS
+note 28 100
+note 28 0
+cc 49 0
+wait 300
+state tools
