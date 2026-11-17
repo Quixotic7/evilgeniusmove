@@ -87,8 +87,8 @@ enum { SQ_TRACKS, SQ_SOUND, SQ_FX, SQ_TOOLS, SQ_N };
 static const char *const SQ_NAME[SQ_N] = { "TRACKS", "SOUND", "FX", "TOOLS" };
 /* Session's four modes (Menu: Sequence <-> Session): CLIPS (the pads the clips, 8 tracks x 4 slots), MIDI FX, FX on
  * the mix, MIX. A clip is a pattern's part of a track (the core's clips, seq.h): slot k is pattern k */
-enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_N };
-static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX" };
+enum { SN_CLIPS, SN_MFX, SN_FX, SN_MIX, SN_SCENES, SN_ARRANGE, SN_N };   /* (the four track buttons', then the belt's) */
+static const char *const SN_NAME[SN_N] = { "CLIPS", "MIDI FX", "FX", "MIX", "SCENES", "ARRANGE" };
 #define NSLOT 16                       /* clip slots a track (A01..A16) */
 #define LAUNCH_Q (A.proj.launch)       /* a clip launched or stopped: the project's launch quantize */
 /* the launch quantize as Shift + the wheel turns it in CLIPS: now (a 16th), a beat, 1, 2, 4, 8 bars, the clip's end */
@@ -244,6 +244,18 @@ static struct {
     uint32_t mx_tap_ms[24];            /* .. each column pad's last tap (two: the default) */
     int undo_cur;                      /* (a clip operation's level: the pattern edited before it) */
     int proj_seen;                     /* the project the clips were last looked at in */
+    /* Session's page belt (the wheel in CLIPS and MIX): open, the page chosen */
+    int belt, belt_sel;
+    /* SCENES: the scene edited; ARRANGE: the positions shown (8 a page) */
+    int scn, apage;
+    /* the scene running (a scene launched, by hand, by a follow action or by the song; -1 none): from tick run_x to
+     * run_end, then what follows it (run_next: decided already) */
+    int run, run_next;
+    int64_t run_x, run_end;
+    int song_on, song_pos;             /* the song playing, its position */
+    int64_t song_t0;                   /* .. the tick its first position began (its progress) */
+    int was_playing;
+    uint32_t rng;
     int rnd_pad;                       /* RND PAGE (6) / RND SOUND (7) held (-1 none) .. */
     uint32_t rnd_ms;                   /* .. since then */
     int rnd_done;
@@ -308,10 +320,32 @@ static int mix_native(void) { return S.mode == MV_MIX && A.ui.mix_page % QD_MIX_
 
 static int mix_on(void);
 static int mix_val(int t, int k);
+static int scn_on(void);
+static int arr_on(void);
+static void scn_val(int i, char *v, int cap, int *frac, int brief);
+static const char *const SCN_LAB[8];
 static void knob_info(int i, kinfo_t *o)
 {
     memset(o, 0, sizeof *o);
     o->frac = -1;
+    if (i >= 0 && i < 8 && scn_on()) {                  /* SCENES: the edited scene's eight */
+        snprintf(o->name, sizeof o->name, "S%d %s", S.scn + 1, SCN_LAB[i]);
+        scn_val(i, o->val, sizeof o->val, &o->frac, 0);
+        o->ok = 1;
+        return;
+    }
+    if (i >= 0 && i < 8 && arr_on()) {                  /* ARRANGE: a position's scene (Shift: its repeats) */
+        const int p = S.apage * 8 + i;
+        snprintf(o->name, sizeof o->name, "POS %d", p + 1);
+        if (S.shift)
+            snprintf(o->val, sizeof o->val, "x%d", A.proj.song[p][1]);
+        else if (A.proj.song[p][0])
+            snprintf(o->val, sizeof o->val, "SCENE %d", A.proj.song[p][0]);
+        else
+            snprintf(o->val, sizeof o->val, "END");
+        o->ok = 1;
+        return;
+    }
     if (i >= 0 && i < 8 && i < QD_TRACKS && mix_on()) {   /* Session's MIX: knob i track i's value */
         const int v = mix_val(i, S.mix_k);
         snprintf(o->name, sizeof o->name, "T%d %s", i + 1, TS_NAME[S.mix_k]);
@@ -532,7 +566,7 @@ static void snd_pad(int p)
 static int page_mode(void)
 {
     return (S.page_latch || (S.loop_btn && !S.loop_down)) && (S.mode == MV_HOME || S.mode == MV_SOUND || S.mode == MV_FX) &&
-           !(S.session && S.sn_mode == SN_CLIPS && S.mode == MV_HOME);
+           !(S.session && (S.sn_mode == SN_CLIPS || S.sn_mode >= SN_SCENES) && S.mode == MV_HOME);
 }
 static unsigned trk_loop(void) { unsigned m = qd_ctl_cpat(&A)->trk[A.sel].loop; return m ? m : 1u; }
 static int trk_npage(void)            /* the clip's length in pages: up to its last page in the loop */
@@ -817,6 +851,7 @@ static void new_clip(void)
  * KEEP leaves it playing); Copy held: the
  * clip copied, then pasted where tapped; Delete held: cut, then pasted where tapped (not pasted: deleted) */
 static void note_pad(int idx, int vel);
+static void scene_launch(int k);
 static void clip_pad(int idx, int down)
 {
     const int t = idx % 8, slot = S.srow + 3 - idx / 8;
@@ -855,13 +890,7 @@ static void clip_pad(int idx, int down)
         return;
     }
     if (S.shift) {                                      /* the row: a scene (an empty slot: EMPTY SLOT's) */
-        int k;
-        for (k = 0; k < QD_TRACKS; k++)
-            if (clip_has(slot, k))
-                clip_launch(k, slot);
-            else if (!A.proj.empty_keep)
-                clip_stop(k);
-        clip_say("SCENE", slot + 1);
+        scene_launch(slot);
         return;
     }
     qd_ctl_select_track(&A, t);
@@ -951,6 +980,345 @@ static void clip_follow(void)
     }
 }
 
+/* ------------------------------------------------------------------ SCENES and ARRANGE --- */
+/* A scene is slot k on every track (pattern k). Launched (Shift + a clip row, a step in SCENES or ARRANGE, the wheel
+ * pressed in SCENES) it starts on every track at one point, its launch quantize's (its own, else the project's), at its
+ * tempo (its own, else the project's), and runs REPEATS lengths of AFTER bars (AUTO: its longest clip); then its FOLLOW
+ * action, CHANCE % of the time (else another length first). The song (ARRANGE) is positions of a scene and its repeats,
+ * to the first END; while it plays, follow actions wait. What follows is decided a bar ahead and launched exactly at the
+ * point (qd_seq_launch_at) */
+#define BAR_TICKS (16 * (int64_t)QD_TPS)
+static const char *const SCN_FOLLOW[QD_NFOLLOW] = { "NONE", "NEXT", "PREVIOUS", "FIRST", "ANY", "OTHER" };
+static const char *const SCN_FOLLOW3[QD_NFOLLOW] = { "OFF", "NXT", "PRV", "1ST", "ANY", "OTH" };   /* (the all-eight) */
+#define NSCN_NAME 16                                    /* the names a scene can take (0: none, SCENE n) */
+static const char *const SCN_NAME[NSCN_NAME] = { "", "INTRO", "VERSE", "PRE", "CHORUS", "BRIDGE", "BREAK", "BUILD", "DROP",
+                                                 "SOLO", "OUTRO", "FILL", "A", "B", "C", "D" };
+static const char *const SCN_NAME3[NSCN_NAME] = { "-", "INT", "VRS", "PRE", "CHO", "BRI", "BRK", "BLD", "DRP", "SOL", "OUT",
+                                                  "FIL", "A", "B", "C", "D" };
+#define NSCN_COL 9                                      /* its colour: none, or one of the tracks' eight */
+/* a scene's launch quantize as its knob turns: the project's, then LAUNCH_ORDER's */
+static const uint8_t SCN_LAUNCH[8] = { QD_SCENE_LAUNCH_PROJ, QD_LAUNCH_NOW, QD_LAUNCH_BEAT, QD_LAUNCH_BAR, QD_LAUNCH_BAR2,
+                                       QD_LAUNCH_BAR4, QD_LAUNCH_BAR8, QD_LAUNCH_END };
+static const char *const SCN_LAUNCH_NAME[8] = { "PROJECT", "NOW", "BEAT", "1 BAR", "2 BARS", "4 BARS", "8 BARS", "CLIP END" };
+static const char *const SCN_LAUNCH3[8] = { "PRJ", "NOW", "BT", "1B", "2B", "4B", "8B", "END" };
+
+static int scn_on(void) { return S.session && S.sn_mode == SN_SCENES && S.mode == MV_HOME && !S.over; }
+static int arr_on(void) { return S.session && S.sn_mode == SN_ARRANGE && S.mode == MV_HOME && !S.over; }
+
+static int scene_used(int k)                            /* a clip in slot k on any track */
+{
+    int t;
+    for (t = 0; t < QD_TRACKS; t++)
+        if (clip_has(k, t))
+            return 1;
+    return 0;
+}
+
+static uint8_t scene_col(int k, int dim)                /* its colour (none: grey) */
+{
+    const int c = k >= 0 && k < QD_NSCENE ? A.proj.scene[k].colour : 0;
+    return c >= 1 && c <= 8 ? (dim ? TRK_DIM[c - 1] : TRK_COL[c - 1]) : dim ? C_GREY : C_LGREY;
+}
+
+static int64_t scene_len(int k)                         /* one length of scene k, ticks: AFTER bars, AUTO its longest
+                                                         * clip in whole bars (at least one) */
+{
+    const qd_scene_t *c = &A.proj.scene[k];
+    int64_t L;
+    if (c->after)
+        return c->after * BAR_TICKS;
+    L = qd_pat_master_ticks(qd_proj_cpat(&A.proj, k));
+    return L <= 0 ? BAR_TICKS : qd_div64(L + BAR_TICKS - 1, (int32_t)BAR_TICKS) * BAR_TICKS;
+}
+
+static int64_t scene_x(int k)                           /* where scene k would start now (stopped: at PLAY) */
+{
+    const int lq = A.proj.scene[k].launch == QD_SCENE_LAUNCH_PROJ ? A.proj.launch : A.proj.scene[k].launch;
+    int t;
+    if (!A.seq.playing)
+        return 0;
+    if (lq == QD_LAUNCH_END)                            /* (the clip end: the first playing track's) */
+        for (t = 0; t < QD_TRACKS; t++)
+            if (qd_seq_clip_on(&A.seq, t))
+                return qd_seq_launch_tick(&A.seq, t, lq);
+    return qd_seq_launch_tick(&A.seq, 0, lq == QD_LAUNCH_END ? QD_LAUNCH_BAR : lq);
+}
+
+/* scene k on every track from tick x, run for reps lengths */
+static void scene_start(int k, int64_t x, int reps)
+{
+    int bpm, t;
+    if (A.proj.scene[k].bpm && !A.proj.bpm)            /* (the project's tempo, kept before a scene first changes it) */
+        A.proj.bpm = (uint16_t)qd_seq_bpm(&A.seq);
+    bpm = A.proj.scene[k].bpm ? A.proj.scene[k].bpm : A.proj.bpm;
+    for (t = 0; t < QD_TRACKS; t++)
+        if (clip_has(k, t)) {
+            qd_seq_launch_at(&A.seq, t, k, x);
+            S.tsel[t] = -1;
+        } else if (!A.proj.empty_keep)
+            qd_seq_stop_track_at(&A.seq, t, x);
+    if (bpm)
+        qd_seq_tempo_at(&A.seq, bpm * 1000, x);
+    S.run = k;
+    S.run_x = x;
+    S.run_end = x + scene_len(k) * (reps < 1 ? 1 : reps);
+    S.run_next = 0;
+}
+
+static void scene_launch(int k)                         /* by hand: the song gives way */
+{
+    if (k < 0 || k >= QD_NSCENE)
+        return;
+    S.song_on = 0;
+    scene_start(k, scene_x(k), A.proj.scene[k].repeats);
+    clip_say("SCENE", k + 1);
+}
+
+static uint32_t rnd(uint32_t n)                         /* (deterministic: the tests' runs repeat) */
+{
+    S.rng = S.rng * 1664525u + 1013904223u;
+    return n ? (S.rng >> 8) % n : 0;
+}
+
+static int follow_target(int k, int f)                  /* the scene a follow action goes to (-1: none to go to) */
+{
+    int used[QD_NSCENE], n = 0, i;
+    for (i = 0; i < QD_NSCENE; i++)
+        if (scene_used(i))
+            used[n++] = i;
+    if (!n)
+        return -1;
+    switch (f) {
+    case QD_FOLLOW_NEXT:
+        for (i = 1; i <= QD_NSCENE; i++)
+            if (scene_used((k + i) % QD_NSCENE))
+                return (k + i) % QD_NSCENE;
+        return k;
+    case QD_FOLLOW_PREV:
+        for (i = 1; i <= QD_NSCENE; i++)
+            if (scene_used((k - i + QD_NSCENE) % QD_NSCENE))
+                return (k - i + QD_NSCENE) % QD_NSCENE;
+        return k;
+    case QD_FOLLOW_FIRST: return used[0];
+    case QD_FOLLOW_ANY: return used[rnd((uint32_t)n)];
+    case QD_FOLLOW_OTHER: {
+        int o[QD_NSCENE], m = 0;
+        for (i = 0; i < n; i++)
+            if (used[i] != k)
+                o[m++] = used[i];
+        return m ? o[rnd((uint32_t)m)] : k;
+    }
+    default: return -1;
+    }
+}
+
+static int song_end(void)                               /* the first END: the song's length in positions */
+{
+    int p;
+    for (p = 0; p < QD_NSONG; p++)
+        if (!A.proj.song[p][0])
+            return p;
+    return QD_NSONG;
+}
+
+static int64_t song_ticks(int from, int to)             /* positions from .. to - 1, ticks */
+{
+    int64_t n = 0;
+    int p;
+    for (p = from; p < to; p++)
+        n += scene_len(A.proj.song[p][0] - 1) * A.proj.song[p][1];
+    return n;
+}
+
+static void song_play(int from)                         /* the song from position from (stopped: PLAY too) */
+{
+    int k;
+    int64_t x;
+    if (from < 0 || from >= song_end()) {
+        show_name("NO SONG");
+        return;
+    }
+    k = A.proj.song[from][0] - 1;
+    x = scene_x(k);
+    S.song_on = 1;
+    S.song_pos = from;
+    S.song_t0 = x - song_ticks(0, from);
+    scene_start(k, x, A.proj.song[from][1]);
+    if (!A.seq.playing)
+        tap(B_PLAY);
+    show_name(from ? "SONG FROM" : "SONG");
+}
+
+static void song_stop(void)                             /* the song stops; the clips play on */
+{
+    S.song_on = 0;
+    S.run = -1;
+    show_name("SONG STOP");
+}
+
+static int song_shown_pos(void)                         /* the position playing now (its successor may be queued) */
+{
+    return !S.song_on && S.run < 0 ? -1 : A.seq.tick >= S.run_x ? S.song_pos : S.song_pos - 1;
+}
+
+/* each look: what follows the scene running, a bar before it ends */
+static void scene_run(void)
+{
+    if (!A.seq.playing) {
+        if (S.was_playing) {                            /* (stopped: the song and the follow actions end) */
+            S.song_on = 0;
+            S.run = -1;
+        }
+        S.was_playing = 0;
+        return;
+    }
+    S.was_playing = 1;
+    if (S.run < 0 || S.run_next || A.seq.tick < S.run_end - BAR_TICKS)
+        return;
+    if (S.song_on) {
+        const int p = S.song_pos + 1;
+        if (p >= song_end()) {                          /* the song's end: the clips play on */
+            S.song_on = 0;
+            S.run_next = 1;
+            return;
+        }
+        S.song_pos = p;
+        scene_start(A.proj.song[p][0] - 1, S.run_end, A.proj.song[p][1]);
+        return;
+    }
+    {
+        const qd_scene_t *c = &A.proj.scene[S.run];
+        int nx;
+        if (c->follow == QD_FOLLOW_NONE) {
+            S.run_next = 1;
+            return;
+        }
+        if (rnd(100) >= c->chance) {                    /* not this time: another length first */
+            S.run_end += scene_len(S.run);
+            return;
+        }
+        nx = follow_target(S.run, c->follow);
+        if (nx < 0) {
+            S.run_next = 1;
+            return;
+        }
+        scene_start(nx, S.run_end, A.proj.scene[nx].repeats);
+    }
+}
+
+static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+/* SCENES' knob i: the edited scene's settings */
+static void scn_knob(int i, int d)
+{
+    qd_scene_t *c = &A.proj.scene[S.scn];
+    int k;
+    switch (i) {
+    case 0:                                             /* TEMPO: OFF below 30; up from OFF: the tempo now */
+        if (!c->bpm)
+            c->bpm = d > 0 ? (uint16_t)qd_seq_bpm(&A.seq) : 0;
+        else
+            c->bpm = c->bpm + d < QD_BPM_MIN ? 0 : (uint16_t)clamp(c->bpm + d, QD_BPM_MIN, QD_BPM_MAX);
+        break;
+    case 1: c->follow = (uint8_t)clamp(c->follow + d, 0, QD_NFOLLOW - 1); break;
+    case 2: c->after = (uint8_t)clamp(c->after + d, 0, 64); break;
+    case 3: c->chance = (uint8_t)clamp(c->chance + d, 0, 100); break;
+    case 4: c->repeats = (uint8_t)clamp(c->repeats + d, 1, 16); break;
+    case 5:
+        for (k = 0; k < 8 && SCN_LAUNCH[k] != c->launch; k++)
+            ;
+        c->launch = SCN_LAUNCH[clamp((k < 8 ? k : 0) + d, 0, 7)];
+        break;
+    case 6: c->name = (uint8_t)clamp(c->name + d, 0, NSCN_NAME - 1); break;
+    case 7: c->colour = (uint8_t)clamp(c->colour + d, 0, NSCN_COL - 1); break;
+    }
+}
+
+static const char *const SCN_LAB[8] = { "TEMPO", "FOLLOW", "AFTER", "CHANCE", "REPEAT", "LAUNCH", "NAME", "COLOUR" };
+static void scn_val(int i, char *v, int cap, int *frac, int brief)   /* knob i's value as shown (brief: the
+                                                         * all-eight's three characters) */
+{
+    const qd_scene_t *c = &A.proj.scene[S.scn];
+    int k;
+    *frac = -1;
+    switch (i) {
+    case 0:
+        if (c->bpm)
+            snprintf(v, (size_t)cap, "%d", c->bpm), *frac = (c->bpm - QD_BPM_MIN) * 1000 / (QD_BPM_MAX - QD_BPM_MIN);
+        else
+            snprintf(v, (size_t)cap, "OFF");
+        break;
+    case 1: snprintf(v, (size_t)cap, "%s", (brief ? SCN_FOLLOW3 : SCN_FOLLOW)[c->follow % QD_NFOLLOW]); break;
+    case 2:
+        if (c->after)
+            snprintf(v, (size_t)cap, brief ? "%d" : c->after > 1 ? "%d BARS" : "%d BAR", c->after), *frac = c->after * 1000 / 64;
+        else
+            snprintf(v, (size_t)cap, brief ? "AUT" : "AUTO");
+        break;
+    case 3: snprintf(v, (size_t)cap, "%d", c->chance), *frac = c->chance * 10; break;
+    case 4: snprintf(v, (size_t)cap, "x%d", c->repeats), *frac = (c->repeats - 1) * 1000 / 15; break;
+    case 5:
+        for (k = 0; k < 8 && SCN_LAUNCH[k] != c->launch; k++)
+            ;
+        snprintf(v, (size_t)cap, "%s", (brief ? SCN_LAUNCH3 : SCN_LAUNCH_NAME)[k < 8 ? k : 0]);
+        break;
+    case 6:
+        snprintf(v, (size_t)cap, "%s", brief ? SCN_NAME3[c->name % NSCN_NAME] : c->name ? SCN_NAME[c->name % NSCN_NAME] : "NONE");
+        break;
+    default:
+        if (c->colour)
+            snprintf(v, (size_t)cap, brief ? "T%d" : "TRACK %d'S", c->colour);
+        else
+            snprintf(v, (size_t)cap, brief ? "-" : "NONE");
+        break;
+    }
+}
+
+static void scene_say(void)                             /* the scene edited: its number and name */
+{
+    char v[20];
+    const int nm = A.proj.scene[S.scn].name;
+    if (nm)
+        snprintf(v, sizeof v, "SCENE %d %s", S.scn + 1, SCN_NAME[nm % NSCN_NAME]);
+    else
+        snprintf(v, sizeof v, "SCENE %d", S.scn + 1);
+    show_name(v);
+}
+
+/* ARRANGE's knob i: position apage * 8 + i's scene (Shift: its repeats) */
+static void arr_knob(int i, int d)
+{
+    const int p = S.apage * 8 + i;
+    if (p >= QD_NSONG)
+        return;
+    if (S.shift)
+        A.proj.song[p][1] = (uint8_t)clamp(A.proj.song[p][1] + d, 1, 16);
+    else
+        A.proj.song[p][0] = (uint8_t)clamp(A.proj.song[p][0] + d, 0, QD_NSCENE);
+}
+
+/* SCENES' pads: the two lower rows the 16 scenes (1-8 above 9-16): tap edits it, Shift + tap launches it */
+static void scn_pad(int idx, int down)
+{
+    const int k = idx < 8 ? idx + 8 : idx - 8;
+    if (!down || idx >= 16)
+        return;
+    if (S.shift)
+        scene_launch(k);
+    else {
+        S.scn = k;
+        scene_say();
+    }
+}
+
+/* ARRANGE's pads: the 32 positions (1-8 the top row); tap: the song from there */
+static void arr_pad(int idx, int down)
+{
+    const int p = (3 - idx / 8) * 8 + idx % 8;
+    if (down)
+        song_play(p);
+}
+
 /* Session's track buttons: its four modes (tapped) */
 static void sess_button(int n, int down)
 {
@@ -959,6 +1327,7 @@ static void sess_button(int n, int down)
             S.tb_down = -1;
         return;
     }
+    S.belt = 0;
     S.tb_down = n;                                      /* (held: button 2 + the wheel, the MIDI FX group) */
     S.tb_ms = S.now ? S.now : 1;
     S.sn_mode = n;
@@ -977,6 +1346,7 @@ static void sess_button(int n, int down)
 static void sess_toggle(void)                           /* Menu: Sequence <-> Session */
 {
     S.session = !S.session;
+    S.belt = 0;
     S.top_hidden = 0;
     S.page_latch = 0;
     seq_go(SQ_TRACKS);
@@ -985,6 +1355,24 @@ static void sess_toggle(void)                           /* Menu: Sequence <-> Se
     else
         S.seq_mode = SQ_TRACKS;
     show_name(S.session ? "SESSION" : "SEQUENCE");
+}
+
+/* the belt's page chosen, entered: the track buttons' four as tapped; SCENES and ARRANGE (the core at home) */
+static void belt_enter(void)
+{
+    const int n = S.belt_sel;
+    S.belt = 0;
+    if (n < SN_SCENES) {
+        sess_button(n, 1);
+        sess_button(n, 0);
+        return;
+    }
+    S.sn_mode = n;
+    seq_go(SQ_TRACKS);
+    if (n == SN_SCENES)
+        scene_say();
+    else
+        show_name(SN_NAME[n]);
 }
 
 /* ------------------------------------------------------------------ input --- */
@@ -1143,6 +1531,14 @@ static void knob(int i, int delta)
         track_mix_of(i, S.mix_k, d);
         return;
     }
+    if (scn_on()) {                                     /* SCENES: the edited scene's eight */
+        scn_knob(i, d);
+        return;
+    }
+    if (arr_on()) {                                     /* ARRANGE: a position's scene (Shift: its repeats) */
+        arr_knob(i, d);
+        return;
+    }
     if (S.mode == MV_SOUND) {
         const spage_t *sp = &SND[S.spage];
         if (i < sp->n) {
@@ -1193,6 +1589,9 @@ static void wheel(int delta)
         qd_ctl_set_tempo(&A, bpm < 30 ? 30 : bpm > 300 ? 300 : bpm);
     } else if (S.mode == MV_BROWSE) {                   /* the sounds: each one heard on the track as it comes up */
         qd_br_turn(&A, d);
+    } else if (S.belt && S.session && S.mode == MV_HOME) {   /* the belt: the page chosen */
+        S.belt_sel = clamp(S.belt_sel + d, 0, SN_N - 1);
+        S.name_until = S.now;                           /* (a name showing gives way to it) */
     } else if (clips_on() && S.shift) {                 /* CLIPS, Shift: the launch quantize */
         int i, k = 0;
         for (i = 0; i < (int)sizeof LAUNCH_ORDER; i++)
@@ -1201,8 +1600,18 @@ static void wheel(int delta)
         k = k + d < 0 ? 0 : k + d >= (int)sizeof LAUNCH_ORDER ? (int)sizeof LAUNCH_ORDER - 1 : k + d;
         A.proj.launch = LAUNCH_ORDER[k];
         launch_say();
-    } else if (clips_on()) {                            /* CLIPS: the slots shown, a row a detent */
-        clip_rows(d < 0 ? -1 : 1);
+    } else if (scn_on()) {                              /* SCENES: the scene edited */
+        S.scn = clamp(S.scn + d, 0, QD_NSCENE - 1);
+        scene_say();
+    } else if (arr_on()) {                              /* ARRANGE: the positions shown, eight a page */
+        char v[20];
+        S.apage = clamp(S.apage + (d < 0 ? -1 : 1), 0, QD_NSONG / 8 - 1);
+        snprintf(v, sizeof v, "SONG %d-%d", S.apage * 8 + 1, S.apage * 8 + 8);
+        show_name(v);
+    } else if (clips_on() || mix_on()) {                /* CLIPS, MIX: the page belt (Plus / Minus move the rows) */
+        S.belt = 1;
+        S.name_until = S.now;
+        S.belt_sel = clamp(S.sn_mode + (d < 0 ? -1 : 1), 0, SN_N - 1);
     } else if (page_mode()) {                           /* the clip's length in pages: longer, the new pages in the
                                                          * loop; shorter, the pages past it out (muted pages stay) */
         const int n0 = trk_npage(), n = n0 + d < 1 ? 1 : n0 + d > QD_NPAGE ? QD_NPAGE : n0 + d;
@@ -1275,6 +1684,25 @@ static void wheel_click(int down)
         S.over = OV_NONE;
         if (S.menu_sel == 1)
             S.quit = 2;
+        return;
+    }
+    if (S.belt && S.session && S.mode == MV_HOME && !S.over) {   /* the belt: into the page chosen */
+        if (down)
+            belt_enter();
+        return;
+    }
+    if (scn_on() && !S.shift) {                         /* SCENES: the edited scene launched */
+        if (down)
+            scene_launch(S.scn);
+        return;
+    }
+    if (arr_on()) {                                     /* ARRANGE: the song from the start; again: stopped */
+        if (down) {
+            if (S.song_on)
+                song_stop();
+            else
+                song_play(0);
+        }
         return;
     }
     if (clips_on() && S.shift) {                        /* CLIPS, Shift: EMPTY SLOT (a scene over a track's empty slot
@@ -1431,6 +1859,11 @@ static void surface_note(int note, int vel)
             page_step(i, down);
             return;
         }
+        if ((scn_on() || arr_on()) && !S.shift) {     /* SCENES, ARRANGE: the steps launch the 16 scenes */
+            if (down)
+                scene_launch(i);
+            return;
+        }
         if ((clips_on() || mix_on()) && !S.shift) {   /* CLIPS, MIX: stop and mute, two under each track */
             if (down)
                 clip_step(i);
@@ -1452,6 +1885,14 @@ static void surface_note(int note, int vel)
         const int idx = note - N_PAD0;                  /* row 0 the bottom */
         if (clips_on()) {                               /* CLIPS: all four rows the clips */
             clip_pad(idx, down);
+            return;
+        }
+        if (scn_on()) {                                 /* SCENES: the lower two rows the scenes */
+            scn_pad(idx, down);
+            return;
+        }
+        if (arr_on()) {                                 /* ARRANGE: the 32 positions */
+            arr_pad(idx, down);
             return;
         }
         if (mix_on()) {                                 /* MIX: the top row what is set, the rows below the tracks */
@@ -1524,6 +1965,20 @@ static void surface_cc(int cc, int v)
             }
             if (S.mode == MV_BROWSE) {                  /* out of the sounds: the track's own sound back */
                 qd_br_cancel(&A);
+                sent = -1;
+                break;
+            }
+            if (S.session && S.mode == MV_HOME && S.belt) {   /* the belt closed: the clips (SCENES, ARRANGE: left) */
+                S.belt = 0;
+                if (S.sn_mode >= SN_SCENES)
+                    S.sn_mode = SN_CLIPS;
+                sent = -1;
+                break;
+            }
+            if (scn_on() || arr_on()) {                 /* SCENES, ARRANGE: up to the belt */
+                S.belt = 1;
+                S.name_until = S.now;
+                S.belt_sel = S.sn_mode;
                 sent = -1;
                 break;
             }
@@ -1801,7 +2256,7 @@ static void sync(void)
         else if (m == MV_FX) S.seq_mode = SQ_FX;
         else if (m == MV_CORE && scr == QD_SCR_TOOLS) S.seq_mode = SQ_TOOLS;
         if (S.session && moved) {                       /* (Session's too, as the core moves: Back from FX is CLIPS) */
-            if (m == MV_HOME && S.sn_mode != SN_MIX) S.sn_mode = SN_CLIPS;
+            if (m == MV_HOME && S.sn_mode != SN_MIX && S.sn_mode < SN_SCENES) S.sn_mode = SN_CLIPS;
             else if (m == MV_FX) S.sn_mode = SN_FX;
             else if (m == MV_MIX) S.sn_mode = SN_MIX;
             else if (m == MV_CORE && scr == QD_SCR_MFX) S.sn_mode = SN_MFX;
@@ -1857,13 +2312,25 @@ static uint8_t preview_lit(int j)
     return (uint8_t)(n == 2 ? TRK_COL[tc] : n ? TRK_DIM[tc] : C_OFF);
 }
 
+/* scene k's LED: running green (about to: blinking), else its colour (no clip in it: off) */
+static uint8_t scene_led(int k, int blink)
+{
+    if (k == S.run && A.seq.playing)
+        return A.seq.tick >= S.run_x ? C_GREEN : blink ? C_GREEN : C_DKGREEN;
+    return scene_used(k) ? scene_col(k, 0) : C_OFF;
+}
+
 static void leds(void)
 {
     qd_leds_t L;
     int i;
-    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on(), mix = mix_on();
+    const int blink = (int)((S.now / 250u) & 1u), clips = clips_on(), mix = mix_on(), scn = scn_on(), arr = arr_on();
     qd_app_leds(&A, &L);
     for (i = 0; i < 16; i++) {
+        if ((scn || arr) && !S.shift) {                /* SCENES, ARRANGE: the steps launch the scenes */
+            led_note(N_STEP0 + i, scene_led(i, blink));
+            continue;
+        }
         if ((clips || mix) && !S.shift) {               /* CLIPS, MIX: under each track its stop (the track's colour while it
                                                          * plays, blinking while it stops; grey stopped) and its mute (red,
                                                          * soloed yellow) */
@@ -1910,6 +2377,19 @@ static void leds(void)
             led_note(N_PAD0 + i, c);
             continue;
         }
+        if (scn) {                                      /* SCENES: the lower rows the scenes, the one edited white */
+            const int k = i < 8 ? i + 8 : i - 8;
+            led_note(N_PAD0 + i, (uint8_t)(i >= 16 ? C_OFF : k == S.scn ? C_WHITE : scene_led(k, blink)));
+            continue;
+        }
+        if (arr) {                                      /* ARRANGE: the positions in their scene's colours, the one
+                                                         * playing green, the end red; the page shown brighter */
+            const int p = (3 - i / 8) * 8 + i % 8, end = song_end(), sh = song_shown_pos();
+            const int k = A.proj.song[p][0] - 1, onpage = p / 8 == S.apage;
+            led_note(N_PAD0 + i, (uint8_t)(p > end ? C_OFF : p == end ? (onpage ? C_RED : C_OFF)
+                                           : p == sh && A.seq.playing ? C_GREEN : scene_col(k, !onpage)));
+            continue;
+        }
         if (mix) {                                      /* MIX: what is set (the chosen white), the tracks' columns in
                                                          * their colours up to the value */
             const int c = i % 8, row = i / 8;
@@ -1936,7 +2416,7 @@ static void leds(void)
         led_note(N_PAD0 + i, (uint8_t)(S.mode == MV_IDLE ? C_OFF : S.pad_note[i] >= 0 ? C_WHITE
                                                                  : pad_is_root(i) ? C_GREEN : C_GREY));
     }
-    for (i = 0; i < 8 && top_row_on() && !clips && !mix; i++) {   /* the top row's keys */
+    for (i = 0; i < 8 && top_row_on() && !clips && !mix && !scn && !arr; i++) {   /* the top row's keys */
         uint8_t c;
         if (S.mute_down)                                /* Mute held: the tracks, a muted one red, a soloed one yellow */
             c = (uint8_t)(i >= QD_TRACKS ? C_OFF : (A.seq.solo >> i & 1u) ? C_YELLOW : (A.seq.mute >> i & 1u) ? C_RED
@@ -2020,6 +2500,8 @@ void egm_init(const char *flash_path)
     S.fpage = 1;                                        /* CHORUS */
     S.tb_down = S.tpad = S.rnd_pad = S.pg_held = S.pg_copied = S.pd_held = S.cl_take = S.mfx_pad = S.mfx_dbl = -1;
     memset(S.tsel, -1, sizeof S.tsel);
+    S.run = -1;
+    S.rng = 0x45474D31u;                                /* ("EGM1") */
     for (i = 0; i < 6; i++)
         S.grp_last[i] = SND_PAD[i][0];
     for (i = 0; i < NSND; i++)
@@ -2071,6 +2553,7 @@ int egm_ui_step(uint32_t now_ms)
         sync();
     }
     clip_follow();
+    scene_run();
     qd_app_tick_locked(&A, now_ms);
     if (S.rnd_pad >= 0 && !S.rnd_done && S.mode == MV_SOUND && now_ms - S.rnd_ms >= RND_MS) {   /* held a second */
         qd_snd_randomise(&A, S.rnd_pad == 6 ? g_snd_core[S.spage][0] : -1);
@@ -2195,6 +2678,36 @@ static void room_draw(mono_t *m, uint32_t now_ms)
 
 static void page_draw(mono_t *m, uint32_t now_ms)
 {
+    if (S.belt && S.session && S.mode == MV_HOME && !S.over) {   /* the belt: the pages, the chosen one large */
+        scr_belt(m, SN_NAME, SN_N, S.belt_sel);
+        return;
+    }
+    if (scn_on()) {                                     /* SCENES: the edited scene's eight */
+        static char val[8][16];
+        const char *lab[8], *vp[8];
+        int frac[8], i;
+        for (i = 0; i < 8; i++) {
+            scn_val(i, val[i], sizeof val[i], &frac[i], 1);
+            lab[i] = SCN_LAB[i], vp[i] = val[i];
+        }
+        scr_eight(m, lab, vp, frac, 8);
+        return;
+    }
+    if (arr_on()) {                                     /* ARRANGE: the song, the page of it shown */
+        int sc[8], rp[8], i, play = -1, prog = -1;
+        const int first = S.apage * 8, shown = song_shown_pos(), end = song_end();
+        for (i = 0; i < 8; i++)
+            sc[i] = A.proj.song[first + i][0], rp[i] = A.proj.song[first + i][1];
+        if (S.song_on || (shown >= 0 && S.run >= 0 && A.seq.playing)) {
+            const int64_t tot = song_ticks(0, end);
+            if (shown >= first && shown < first + 8)
+                play = shown - first;
+            if (tot > 0 && S.song_on)
+                prog = (int)((A.seq.tick - S.song_t0) * 1000 / tot);
+        }
+        scr_song(m, first, sc, rp, play, prog);
+        return;
+    }
     if (mix_on()) {                                     /* MIX: the tracks' values of what is set */
         ui_mix_t mv;
         int v[8], mute[8], meter[8], t;
@@ -2404,6 +2917,7 @@ void egm_describe(char *out, int cap)
              "mute=%x solo=%x page=%d shift=%d sq=%s top=%s", S.mode, S.over, A.sel + 1, qd_view_screen(&A), A.seq.playing,
              qd_seq_bpm(&A.seq), A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.seq.solo,
              A.ui.page[A.sel] + 1, S.shift, SQ_NAME[S.seq_mode], top_row_on() ? "on" : "hidden");
+    snprintf(out + strlen(out), (size_t)cap - strlen(out), " bar=%d", (int)(A.seq.tick / (16 * (int64_t)QD_TPS)) + 1);
     snprintf(out + strlen(out), (size_t)cap - strlen(out), " pagemode=%d loopmask=%x npage=%d level=%d", page_mode(),
              trk_loop(), trk_npage(), A.model.t[A.sel].mix.level);
     {   /* Session: the mode, the rows, each track's clip (x: stopped; >n queued, >x stopping) */
@@ -2435,6 +2949,18 @@ void egm_describe(char *out, int cap)
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " toprow=");   /* the top row's colours as sent */
         for (t = 0; t < 8; t++)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", S.led_note[N_PAD0 + 24 + t]);
+        {   /* SCENES: the scene edited, its settings; the scene running; the song (each position: scene x repeats) */
+            const qd_scene_t *c = &A.proj.scene[S.scn];
+            int p;
+            snprintf(out + strlen(out), (size_t)cap - strlen(out),
+                     " belt=%s scn=%d set=%d,%s,%d,%d,%d,%d,%d,%d run=%d song=%s:%d pos=", S.belt ? SN_NAME[S.belt_sel] : "-",
+                     S.scn + 1, c->bpm, SCN_FOLLOW[c->follow % QD_NFOLLOW], c->after, c->chance, c->repeats,
+                     c->launch == QD_SCENE_LAUNCH_PROJ ? -1 : c->launch, c->name, c->colour, S.run + 1, S.song_on ? "on" : "off",
+                     song_shown_pos() + 1);
+            for (p = 0; p < song_end(); p++)
+                snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%dx%d", p ? "," : "", A.proj.song[p][0],
+                         A.proj.song[p][1]);
+        }
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " mixk=%s mix=", TS_NAME[S.mix_k]);   /* MIX's value */
         for (t = 0; t < QD_TRACKS; t++)
             snprintf(out + strlen(out), (size_t)cap - strlen(out), "%s%d", t ? "," : "", mix_val(t, S.mix_k));

@@ -818,6 +818,10 @@ void qd_seq_stop(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
     s->ext_wait = 0;
     pos_set(s, 0);
     s->sw_pat = -1;
+    if (s->tmp_mbpm) {                                  /* (a scene's tempo waiting: its scene is taken, so is it) */
+        qd_seq_tempo_mbpm(s, s->tmp_mbpm);
+        s->tmp_mbpm = 0;
+    }
     if (s->clips) {                                     /* clips: what was queued taken; a stopped track stays so */
         int t;
         for (t = 0; t < QD_PAT_NTRACK; t++) {
@@ -976,9 +980,23 @@ static void clip_back(qd_seq_t *s, int t)
     c->origin = s->torigin[t];                          /* (not an entry: the playing clip goes on) */
 }
 
+int64_t qd_seq_launch_tick(const qd_seq_t *s, int t, int launch) { return launch_x(s, t, launch); }
+
+static int64_t at_x(const qd_seq_t *s, int64_t x)      /* (a tick passed, or now: the next 16th) */
+{
+    const int64_t now = (s->tick + (s->tick_rem > 0));
+    return x >= now ? x : launch_x(s, 0, QD_LAUNCH_NOW);
+}
+
 void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
 {
-    int64_t x;
+    if (!s->clips || t < 0 || t >= QD_PAT_NTRACK || pat < 0 || pat >= QD_NPAT)
+        return;
+    qd_seq_launch_at(s, t, pat, s->playing ? launch_x(s, t, launch) : 0);
+}
+
+void qd_seq_launch_at(qd_seq_t *s, int t, int pat, int64_t x)
+{
     if (!s->clips || t < 0 || t >= QD_PAT_NTRACK || pat < 0 || pat >= QD_NPAT)
         return;
     if (!s->playing) {
@@ -987,7 +1005,7 @@ void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
         s->toff[t] = s->ton[t] = INT64_MAX;
         return;
     }
-    x = launch_x(s, t, launch);
+    x = at_x(s, x);
     if (s->toff[t] > x)                                 /* a stop after it: gone */
         s->toff[t] = INT64_MAX;
     else if (s->ton[t] > x)                             /* stopped (or stopping first): heard again from x */
@@ -1002,7 +1020,29 @@ void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
 
 void qd_seq_stop_track(qd_seq_t *s, int t, int launch)
 {
-    int64_t x;
+    if (!s->clips || t < 0 || t >= QD_PAT_NTRACK)
+        return;
+    qd_seq_stop_track_at(s, t, s->playing ? launch_x(s, t, launch == QD_LAUNCH_END ? QD_LAUNCH_BAR : launch) : 0);
+}
+
+void qd_seq_tempo_at(qd_seq_t *s, int32_t mbpm, int64_t x)
+{
+    if (s->tmp_mbpm && s->tmp_x <= s->tick) {           /* (one due: taken first, not lost) */
+        if (!s->ext)
+            qd_seq_tempo_mbpm(s, s->tmp_mbpm);
+        s->tmp_mbpm = 0;
+    }
+    if (!s->playing || x <= s->tick) {
+        qd_seq_tempo_mbpm(s, mbpm);
+        s->tmp_mbpm = 0;
+        return;
+    }
+    s->tmp_mbpm = mbpm;
+    s->tmp_x = x;
+}
+
+void qd_seq_stop_track_at(qd_seq_t *s, int t, int64_t x)
+{
     if (!s->clips || t < 0 || t >= QD_PAT_NTRACK)
         return;
     if (!s->playing) {
@@ -1022,8 +1062,7 @@ void qd_seq_stop_track(qd_seq_t *s, int t, int launch)
         s->ton[t] = INT64_MAX;
         return;
     }
-    x = launch_x(s, t, launch == QD_LAUNCH_END ? QD_LAUNCH_BAR : launch);
-    s->toff[t] = x;
+    s->toff[t] = at_x(s, x);
     s->ton[t] = INT64_MAX;
 }
 
@@ -1248,6 +1287,12 @@ void qd_seq_block(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
     s->pos = pos1;
     s->tick = t1, s->tick_rem = r1;
     s->now += QD_SEQ_BLOCK;
+    if (s->tmp_mbpm && s->tick >= s->tmp_x) {           /* (a scene's tempo, from its start: due by the block's end,
+                                                         * so no look sees its tick passed with it waiting) */
+        if (!s->ext)
+            qd_seq_tempo_mbpm(s, s->tmp_mbpm);
+        s->tmp_mbpm = 0;
+    }
 }
 
 /* ---------------------------------------------------------------- MIDI clock in --- */

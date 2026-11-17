@@ -318,6 +318,23 @@ typedef struct {
     void *ctx;
 } qd_pat_io_t;
 
+/* the Move's SCENES (2026-11-17): a scene's settings. Its length is AFTER bars (0: AUTO, its longest clip); it plays
+ * REPEATS lengths, then its FOLLOW action, which happens CHANCE % of the times (else it plays another length first) */
+#define QD_NSCENE 16
+#define QD_NSONG 32                     /* the Move's ARRANGE: positions in the song */
+enum { QD_FOLLOW_NONE, QD_FOLLOW_NEXT, QD_FOLLOW_PREV, QD_FOLLOW_FIRST, QD_FOLLOW_ANY, QD_FOLLOW_OTHER, QD_NFOLLOW };
+typedef struct {
+    uint16_t bpm;                       /* 0: the project's; 30..300 */
+    uint8_t follow;                     /* QD_FOLLOW_* */
+    uint8_t after;                      /* its length in bars, 1..64; 0: AUTO */
+    uint8_t chance;                     /* 0..100 % */
+    uint8_t repeats;                    /* 1..16 */
+    uint8_t launch;                     /* QD_LAUNCH_* (seq.h); QD_SCENE_LAUNCH_PROJ: the project's */
+    uint8_t colour;                     /* 0: none; 1..: the Move layer's scene colours */
+    uint8_t name;                       /* 0: none (SCENE n); 1..: the Move layer's section names */
+} qd_scene_t;
+#define QD_SCENE_LAUNCH_PROJ 0xFF
+
 typedef struct {
     qd_pattern_t pat[QD_PAT_RAM];       /* (the host: every pattern, pat[k]; the device: the slots) */
 #if QD_PAT_RAM < QD_NPAT
@@ -364,8 +381,14 @@ typedef struct {
     uint8_t rec_auto;                   /* P1.6d: AUTOMATION: armed live recording records knob moves too (1 ON) */
     uint8_t empty_keep;                 /* the Move's EMPTY SLOT: a scene launched over a track's empty slot stops the
                                          * track (0, as Live and the Move do) or leaves it playing (1) */
+    uint16_t bpm;                       /* the Move: the project's tempo, as last set (0: none kept; a scene's own tempo
+                                         * leaves it alone) */
+    qd_scene_t scene[QD_NSCENE];        /* the Move's SCENES: scene k is slot k on every track (pattern k) */
+    uint8_t song[QD_NSONG][2];          /* the Move's ARRANGE: each position's scene + 1 (0: the song ends there), its
+                                         * repeats (1..16) */
 } qd_project_t;
 enum { QD_TAKE_CAPTURE, QD_TAKE_OVERDUB, QD_TAKE_REPLACE };   /* qd_project_t.rec_dub */
+void qd_scenes_init(qd_project_t *pr);  /* the Move: every scene's settings their defaults, the song empty */
 /* the MIDI FX group a step of track t plays through: 0 none, 1..5 (the step's, else the track's) */
 int qd_step_mfx(const qd_pattern_t *p, int t, int s);
 

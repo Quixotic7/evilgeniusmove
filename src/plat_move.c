@@ -339,7 +339,7 @@ static void test_poll(uint32_t ms, int late)
             n = 0;
     }
     if (ms - last >= 250u) {
-        char line[700];
+        char line[1100];
         FILE *f;
         last = ms;
         egm_describe(line, sizeof line);

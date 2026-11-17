@@ -93,7 +93,7 @@ cc 3 0
 cc 49 0
 wait 100
 state empty-keep
-cc 49 127                # Shift + slot 2's row: its scene; the tracks with no clip there play on
+cc 49 127                # Shift + slot 1's row (New Clip scrolled back up): its scene; empty tracks play on
 note 92 100
 wait 30
 note 92 0

@@ -1,0 +1,107 @@
+# Session's SCENES and ARRANGE: the belt (the wheel in CLIPS), a scene's settings, follow actions, the song
+tap 85                   # out of the title
+wait 300
+cc 50 127                # Session
+cc 50 0
+wait 100
+cc 49 127                # Shift + the wheel: the launch quantize down to NOW, up to a bar (whatever it was)
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 127
+cc 14 1
+cc 14 1
+cc 49 0
+wait 100
+state clips
+cc 14 1                  # the wheel: the belt opens (MIDI FX), on to SCENES
+wait 30
+cc 14 1
+wait 30
+cc 14 1
+wait 30
+cc 14 1
+wait 100
+state belt-scenes
+shot 01-belt
+cc 3 127                 # pressed: SCENES (scene 1)
+cc 3 0
+wait 1200
+state scenes
+shot 02-scenes
+cc 72 4                  # knob 2: FOLLOW NEXT
+wait 30
+cc 73 4                  # knob 3: AFTER 1 bar
+wait 30
+cc 71 4                  # knob 1: TEMPO from OFF: the tempo now
+wait 30
+cc 71 4                  # .. and one up
+wait 600
+state scene1-set
+cc 14 1                  # the wheel: scene 2; FOLLOW 1ST, AFTER 1
+wait 30
+cc 72 4
+cc 72 4
+cc 72 4
+cc 73 4
+wait 1200
+state scene2-set
+shot 03-scene2
+tap 85                   # PLAY
+wait 100
+note 24 100              # step 9: scene 9 launched (empty: every track stopped), then step 1: scene 1
+wait 30
+note 24 0
+wait 100
+note 16 100
+wait 30
+note 16 0
+wait 100
+state scene1-queued
+wait 2200
+state scene1-runs
+wait 2000
+state scene2-runs        # (scene 1 one bar: NEXT, scene 2)
+wait 2000
+state scene1-again       # (scene 2 one bar: 1ST, scene 1)
+cc 51 127                # Back: the belt (SCENES); on to ARRANGE, pressed
+cc 51 0
+wait 30
+cc 14 1
+wait 30
+cc 3 127
+cc 3 0
+wait 300
+state arrange
+cc 71 4                  # position 1: scene 2, position 2: scene 1 twice
+cc 71 4
+wait 30
+cc 72 4
+wait 30
+cc 49 127
+cc 72 4
+cc 49 0
+wait 1200
+state song-set
+shot 04-song
+cc 3 127                 # pressed: the song from the start
+cc 3 0
+wait 100
+state song-queued
+wait 2200
+state song-pos1
+wait 2000
+state song-pos2
+shot 05-song-playing
+wait 4000
+state song-ended         # (position 2 twice, then the end: the clips play on)
+cc 51 127                # Back: the belt; Back again: the clips
+cc 51 0
+wait 30
+cc 51 127
+cc 51 0
+wait 100
+state back-clips

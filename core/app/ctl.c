@@ -207,6 +207,7 @@ void qd_ctl_set_tempo(qd_app_t *a, int bpm)
 {
     bpm = bpm < QD_BPM_MIN ? QD_BPM_MIN : bpm > QD_BPM_MAX ? QD_BPM_MAX : bpm;
     qd_ctl_pat(a)->bpm = (uint16_t)bpm;
+    a->proj.bpm = (uint16_t)bpm;                        /* (the Move: the project's tempo, kept) */
     qd_seq_tempo_mbpm(&a->seq, bpm * 1000);
     qd_app_tempo(a, bpm);
 }

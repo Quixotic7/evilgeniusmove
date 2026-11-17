@@ -67,5 +67,9 @@ void scr_session(mono_t *m, const uint8_t cell[4][8], int n, int first, int sel_
 void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, const int *meter, int n, int sel, int pan);
 /* a short menu: three rows shown, the chosen one a solid bar */
 void scr_menu(mono_t *m, const char *const *items, int n, int sel);
+/* Session's page belt: the pages as boxes on a belt, the chosen one large, its name under it */
+void scr_belt(mono_t *m, const char *const *names, int n, int sel);
+/* Session's ARRANGE: eight positions from first, each its scene (0: END) and repeats, the playing one filled */
+void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, int prog);
 
 #endif

@@ -1093,8 +1093,30 @@ static void t_clips(void)
     qd_seq_select_at(&A.seq, 7, QD_LAUNCH_BAR);
     CHECK(qd_seq_clip(&A.seq, 0) == 7 && qd_seq_clip(&A.seq, 1) == 7 && qd_seq_clip_on(&A.seq, 1) && A.seq.cur == 7,
           "a scene: every track's part of it");
+    {   /* the Move's scenes: a launch, a stop and a tempo at one tick (two bars on); a tick passed: the next 16th */
+        const int64_t bar = 16 * (int64_t)QD_TPS;
+        int64_t x;
+        tap_button(QD_B_PLAY);
+        run(300, 0);
+        x = (A.seq.tick / bar + 2) * bar;
+        qd_seq_launch_at(&A.seq, 0, 8, x);
+        qd_seq_stop_track_at(&A.seq, 1, x);
+        qd_seq_tempo_at(&A.seq, 90000, x);
+        CHECK(qd_seq_clip_queued(&A.seq, 0) == 8 && A.seq.tq_x[0] == x && qd_seq_clip_queued(&A.seq, 1) == -2 &&
+                  qd_seq_bpm(&A.seq) != 90, "at a tick: queued there, the tempo waiting");
+        t0 = now;
+        while (A.seq.tick < x && now < t0 + 6000)
+            run(1, 0);
+        CHECK(qd_seq_clip(&A.seq, 0) == 8 && A.seq.torigin[0] == x && !qd_seq_clip_on(&A.seq, 1) &&
+                  qd_seq_bpm(&A.seq) == 90, "at the tick: the clip, the stop, the tempo");
+        qd_seq_launch_at(&A.seq, 0, 7, 0);
+        CHECK(qd_seq_clip_queued(&A.seq, 0) == 7 && A.seq.tq_x[0] > A.seq.tick && A.seq.tq_x[0] % QD_TPS == 0 &&
+                  A.seq.tq_x[0] - A.seq.tick <= QD_TPS, "a tick passed: the next 16th");
+        tap_button(QD_B_PLAY);
+        run(10, 0);
+    }
     qd_seq_clips(&A.seq, 0);
-    printf("  clips: each track its own clip, launched at the bar, stopped (silent), a scene\n");
+    printf("  clips: each track its own clip, launched at the bar, stopped (silent), a scene; at a tick, its tempo\n");
 }
 
 /* P1.4b: the tracks screen of clocks is retired; FX tapped: the effects (FX lit), again their next page; ENV: the mix

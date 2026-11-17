@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         else if (!strcmp(cmd, "state")) {
             int t, sc, pl;
             egm_state(&t, &sc, &pl);
-            char d[700];
+            char d[1100];
             egm_describe(d, sizeof d);
             (void)t, (void)sc, (void)pl;
             printf("state %-14s %s\n", a, d);

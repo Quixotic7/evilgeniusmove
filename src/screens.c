@@ -761,3 +761,62 @@ void scr_mix_cols(mono_t *m, const char *name, const int *v, const int *mute, co
         mono_ctext(m, x + w / 2, 57, mute[i] ? "M" : num, MONO_FS, 1, i == sel ? 0 : 1);
     }
 }
+
+/* ------------------------------------------------------------------ Session's page belt --- */
+void scr_belt(mono_t *m, const char *const *names, int n, int sel)
+{
+    int i;
+    mono_clear(m);
+    mono_line(m, 0, 40, MONO_W - 1, 40, 1);             /* the belt, a box a page riding it */
+    for (i = -2; i <= 2; i++) {
+        const int k = sel + i, w = i ? 18 : 30, h = i ? 12 : 20, x = 64 + i * 30 - w / 2;
+        if (k < 0 || k >= n)
+            continue;
+        if (i)
+            mono_box(m, x, 40 - h, w, h, 1);
+        else
+            mono_rect(m, x, 40 - h, w, h, 1);
+    }
+    for (i = 0; i < MONO_W; i += 6)                     /* (its rollers) */
+        mono_pset(m, i, 42, 1);
+    mono_ctext(m, 64, 48, names[sel], MONO_FB, 2, 1);
+    if (sel > 0)
+        mono_text(m, 1, 52, "<", MONO_FB, 1, 1);
+    if (sel < n - 1)
+        mono_text(m, 122, 52, ">", MONO_FB, 1, 1);
+}
+
+/* ------------------------------------------------------------------ Session's ARRANGE --- */
+/* the song, eight positions from first (1-based on screen): a box each with its scene (0: END, the boxes after it
+ * empty), its repeats under it; the playing one (0..7, -1 none) filled; the song's progress (0..1000, < 0 none) a
+ * line under them */
+void scr_song(mono_t *m, int first, const int *scene, const int *rep, int play, int prog)
+{
+    int i, ended = 0;
+    char t[16];
+    mono_clear(m);
+    snprintf(t, sizeof t, "SONG %d-%d", first + 1, first + 8);
+    mono_text(m, 1, 1, t, MONO_FS, 1, 1);
+    for (i = 0; i < 8; i++) {
+        const int x = i * 16 + 1, y = 12, w = 14, h = 18;
+        char s[6];
+        if (ended)
+            continue;
+        if (!scene[i]) {                                /* the song's end */
+            mono_ctext(m, x + w / 2, y + 6, "END", MONO_FS, 1, 1);
+            ended = 1;
+            continue;
+        }
+        if (i == play)
+            mono_rect(m, x, y, w, h, 1);
+        else
+            mono_box(m, x, y, w, h, 1);
+        snprintf(s, sizeof s, "%d", scene[i]);
+        mono_ctext(m, x + w / 2, y + 6, s, MONO_FB, 1, i == play ? 0 : 1);
+        snprintf(s, sizeof s, "x%d", rep[i]);
+        mono_ctext(m, x + w / 2, y + h + 4, s, MONO_FS, 1, 1);
+    }
+    mono_dots_h(m, 1, 50, 126, 2);
+    if (prog >= 0)
+        mono_rect(m, 1, 49, (prog > 1000 ? 1000 : prog) * 126 / 1000, 3, 1);
+}

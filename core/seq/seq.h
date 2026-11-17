@@ -192,6 +192,8 @@ typedef struct {
     int64_t torigin[QD_PAT_NTRACK];     /* where the playing clip started */
     int64_t toff[QD_PAT_NTRACK], ton[QD_PAT_NTRACK];   /* the track silent from grid tick toff to ton (INT64_MAX:
                                                          * playing; stopped: toff passed, ton INT64_MAX) */
+    int32_t tmp_mbpm;                   /* the Move's scenes: a tempo waiting for tick tmp_x (0: none) */
+    int64_t tmp_x;
     /* the tracks */
     qd_tcur_t cur_t[QD_PAT_NTRACK];
     int64_t inf_g[QD_PAT_NTRACK];       /* the step (its grid tick) holding INF notes on the track */
@@ -268,6 +270,12 @@ void qd_seq_stop_track(qd_seq_t *s, int t, int launch);
 int qd_seq_clip(const qd_seq_t *s, int t);          /* the clip playing on track t (stopped: the one PLAY starts) */
 int qd_seq_clip_on(const qd_seq_t *s, int t);       /* track t plays (or would at PLAY) */
 int qd_seq_clip_queued(const qd_seq_t *s, int t);   /* the clip queued on t: -1 none, -2 a stop */
+/* the Move's scenes and song: where a launch on track t would land (a tick); a launch or a stop at tick x (one passed
+ * or now: at the next 16th); the tempo from tick x (stopped, or x passed: now) */
+int64_t qd_seq_launch_tick(const qd_seq_t *s, int t, int launch);
+void qd_seq_launch_at(qd_seq_t *s, int t, int pat, int64_t x);
+void qd_seq_stop_track_at(qd_seq_t *s, int t, int64_t x);
+void qd_seq_tempo_at(qd_seq_t *s, int32_t mbpm, int64_t x);
 /* the playing pattern's master length and the ticks to the change (0: none queued) */
 int64_t qd_seq_to_change(const qd_seq_t *s);
 

@@ -549,9 +549,19 @@ static uint32_t ser_hdr(const qd_app_t *a, uint8_t *b)
         b[o++] = (uint8_t)(qd_seq_clip_on(&a->seq, t) ? 0 : 1);
     }
     b[o++] = pr->empty_keep;                            /* the Move: EMPTY SLOT (older records: STOP) */
+    b[o++] = (uint8_t)(pr->bpm & 0xFF), b[o++] = (uint8_t)(pr->bpm >> 8);   /* the Move: the tempo, SCENES, ARRANGE
+                                                         * (older records: none kept, the defaults, no song) */
+    for (t = 0; t < QD_NSCENE; t++) {
+        const qd_scene_t *c = &pr->scene[t];
+        b[o++] = (uint8_t)(c->bpm & 0xFF), b[o++] = (uint8_t)(c->bpm >> 8);
+        b[o++] = c->follow, b[o++] = c->after, b[o++] = c->chance, b[o++] = c->repeats;
+        b[o++] = c->launch, b[o++] = c->colour, b[o++] = c->name;
+    }
+    memcpy(b + o, pr->song, sizeof pr->song), o += sizeof pr->song;
     return o;
 }
 
+#define QD_SCENE_REC 9                                  /* (a scene's bytes in the header record) */
 static int g_clips_read;                                /* the Move: the project's record gave each track's clip */
 static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
 {
@@ -561,7 +571,7 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     int t;
     if (len < 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK ||
         len > 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + QD_NTRACK * QD_NROOM +
-                  2 * QD_NTRACK + 1 || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
+                  2 * QD_NTRACK + 1 + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
                                                      * made every record too long, so none was read back) */
         b[1] != 1)
         return 0;
@@ -614,6 +624,32 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     }
     o += 2u * QD_NTRACK;
     pr->empty_keep = o < len ? (uint8_t)(b[o] & 1) : 0;   /* the Move: EMPTY SLOT */
+    o += 1;
+    qd_scenes_init(pr);
+    pr->bpm = 0;
+    if (o + 2 + QD_NSCENE * QD_SCENE_REC + 2 * QD_NSONG <= len) {   /* the Move: the tempo, SCENES, ARRANGE */
+        pr->bpm = (uint16_t)(b[o] | b[o + 1] << 8);
+        if (pr->bpm < QD_BPM_MIN || pr->bpm > QD_BPM_MAX)
+            pr->bpm = 0;
+        else if (!a->seq.ext)
+            qd_seq_tempo_mbpm(&a->seq, (int32_t)pr->bpm * 1000);
+        o += 2;
+        for (t = 0; t < QD_NSCENE; t++, o += QD_SCENE_REC) {
+            qd_scene_t *c = &pr->scene[t];
+            const uint16_t bpm = (uint16_t)(b[o] | b[o + 1] << 8);
+            c->bpm = bpm >= QD_BPM_MIN && bpm <= QD_BPM_MAX ? bpm : 0;
+            c->follow = b[o + 2] < QD_NFOLLOW ? b[o + 2] : QD_FOLLOW_NONE;
+            c->after = b[o + 3] <= 64 ? b[o + 3] : 0;
+            c->chance = b[o + 4] <= 100 ? b[o + 4] : 100;
+            c->repeats = b[o + 5] >= 1 && b[o + 5] <= 16 ? b[o + 5] : 1;
+            c->launch = b[o + 6] < QD_NLAUNCH ? b[o + 6] : QD_SCENE_LAUNCH_PROJ;
+            c->colour = b[o + 7], c->name = b[o + 8];
+        }
+        for (t = 0; t < QD_NSONG; t++, o += 2) {
+            pr->song[t][0] = b[o] <= QD_NSCENE ? b[o] : 0;
+            pr->song[t][1] = b[o + 1] >= 1 && b[o + 1] <= 16 ? b[o + 1] : 1;
+        }
+    }
     return 1;
 }
 

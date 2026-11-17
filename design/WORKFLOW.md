@@ -496,13 +496,41 @@ compiles.
 - **Page mode's pad row 2** previews a page's trigs: 8 pads for 16 steps, so a pad is two steps (both on: the track's
   colour; one: dim; the play head: white). The page is the page step held, else the page playing, else the one shown.
   Tapping it does nothing. Test: `tests/preview.txt` (the state line's `row2=`).
+- **SCENES and ARRANGE (17 November 2026):**
+  - **Session's page belt:** the wheel in CLIPS or MIX opens it (CLIPS, MIDI FX, FX, MIX, SCENES, ARRANGE; no SEQ
+    yet), the wheel chooses, a press enters, Back closes it. The picture is a still belt (boxes, the chosen one large,
+    its name under it); the conveyor's motion and the brain are left for the belt's own stage. The rows of clips move
+    on Plus / Minus / Left / Right only now, as the design has them.
+  - **A scene** (slot k on every track) has its settings in the project (`qd_scene_t`, saved at the end of the header
+    record): TEMPO (0: the project's), FOLLOW (NONE, NEXT, PREVIOUS, FIRST, ANY, OTHER: among the scenes that hold a
+    clip), AFTER (its length in bars; AUTO: its longest clip, whole bars), CHANCE, REPEATS, LAUNCH (its own quantize,
+    or the project's), NAME (a list of section names: INTRO, VERSE, PRE, CHORUS, BRIDGE, BREAK, BUILD, DROP, SOLO,
+    OUTRO, FILL, A-D), COLOUR (one of the tracks' eight).
+  - **A scene launched** (Shift + a clip row, a step in SCENES or ARRANGE, the wheel pressed in SCENES) starts on every
+    track at one point, its quantize's (CLIP END: the first playing track's loop end), and its tempo there. It runs
+    REPEATS lengths; then its follow action, CHANCE % of the time (else one more length first). What follows is
+    decided a bar ahead and launched at the exact tick (the core's new `qd_seq_launch_at`, `qd_seq_stop_track_at`,
+    `qd_seq_tempo_at`). The project's tempo is now kept (`qd_project_t.bpm`, the header record), so OFF goes back to
+    it; it was not restored at load before, and is now.
+  - **The song** (ARRANGE) is 32 positions of a scene and its repeats, to the first END. Pressed, it plays from the
+    start (stopped: PLAY too); a position pad plays it from there; again, it stops and the clips play on. While it
+    plays, the scenes' follow actions wait; a scene launched by hand ends it; so does stopping the transport.
+  - **Screens:** SCENES is the all-eight view (three-letter values; the knob's pop-up has the words), ARRANGE the
+    design's boxes (scene, repeats under it, the one playing filled, the song's progress under them).
+  - **LEDs:** a scene in its colour (none: light grey; no clip in it: off), running green, about to run blinking
+    green; ARRANGE's positions in their scenes' colours (the page shown bright, the others dim), the end red.
+  - **Not here yet:** undo for the scene settings and the song (they are the project's header, outside undo); the
+    FM-1's chains into ARRANGE and banks B-D into scenes (no FM-1 project is converted by this build).
+  - Tests: `tests/scenes.txt` (the belt, the settings, NEXT and FIRST alternating with the tempo, the song to its
+    end), `keep.txt` (a scene's FOLLOW and the song kept); `make core-test` (113 checks: a launch, a stop and a tempo
+    at a tick).
 
 **Not built yet:**
 
 1. **PERFORM:** throws, beat repeat, filter sweeps, tape.
 2. **Mod mapping:** a modulation matrix for ENV and LFO.
-3. **SCENES and ARRANGE.**
-4. **The page belt on the wheel**, the sound-lock keys, the Trig page on pad 1.
+3. **The rest of the page belts:** Session's SEQ page and the belt's motion; Sequence's belt; the sound-lock keys,
+   the Trig page on pad 1.
 
 **17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
 evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this

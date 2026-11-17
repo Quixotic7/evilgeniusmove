@@ -1,5 +1,6 @@
 # What a project keeps between runs: run it twice with EGM_FLASH set to the same new file; the second run's start
-# shows the first run's end (each track's clip, stopped or not; track 3's volume; EMPTY SLOT)
+# shows the first run's end (each track's clip, stopped or not; track 3's volume; EMPTY SLOT; scene 1's FOLLOW, the
+# song)
 tap 85                   # out of the title
 wait 300
 state start
@@ -22,6 +23,31 @@ cc 3 127
 cc 3 0
 cc 49 0
 wait 2500
+cc 14 1                  # the belt: SCENES; scene 1's FOLLOW NEXT
+cc 14 1
+cc 14 1
+cc 14 1
+cc 3 127
+cc 3 0
+wait 100
+cc 72 4
+wait 100
+cc 51 127                # Back: the belt; ARRANGE: position 1 scene 2, three times
+cc 51 0
+cc 14 1
+cc 3 127
+cc 3 0
+wait 100
+cc 71 8
+cc 49 127
+cc 71 8
+cc 49 0
+wait 100
+cc 51 127                # Back, Back: the clips
+cc 51 0
+cc 51 127
+cc 51 0
+wait 100
 cc 50 127                # Sequence; track 3 held: its volume down
 cc 50 0
 wait 100
