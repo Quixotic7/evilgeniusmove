@@ -153,11 +153,6 @@ typedef struct {
     uint8_t hr[QD_SEQ_NHIST];
 } qd_tcur_t;
 
-#if QD_CLIPS
-#define QD_CLIP_NT QD_PAT_NTRACK
-#else
-#define QD_CLIP_NT 1
-#endif
 typedef struct {
     qd_project_t *proj;
     qd_model_t *model;
@@ -190,13 +185,13 @@ typedef struct {
     /* clips (2026-11-17, EvilGenius for Move): each track plays a part of its own, launched and stopped on its own: a
      * clip is pattern k's track t. cur is then only the pattern edited. Off (the FM-1, the default): every track plays
      * cur, as before */
-    int clips;                          /* (never set where QD_CLIPS is 0: the arrays one long) */
-    int8_t tpat[QD_CLIP_NT];            /* the clip playing (stopped: the one PLAY starts) */
-    int8_t tq[QD_CLIP_NT];              /* the clip queued (-1 none) .. */
-    int64_t tq_x[QD_CLIP_NT];           /* .. the tick it starts */
-    int64_t torigin[QD_CLIP_NT];        /* where the playing clip started */
-    int64_t toff[QD_CLIP_NT], ton[QD_CLIP_NT];   /* the track silent from grid tick toff to ton (INT64_MAX: playing;
-                                                   * stopped: toff passed, ton INT64_MAX) */
+    int clips;
+    int8_t tpat[QD_PAT_NTRACK];         /* the clip playing (stopped: the one PLAY starts) */
+    int8_t tq[QD_PAT_NTRACK];           /* the clip queued (-1 none) .. */
+    int64_t tq_x[QD_PAT_NTRACK];        /* .. the tick it starts */
+    int64_t torigin[QD_PAT_NTRACK];     /* where the playing clip started */
+    int64_t toff[QD_PAT_NTRACK], ton[QD_PAT_NTRACK];   /* the track silent from grid tick toff to ton (INT64_MAX:
+                                                         * playing; stopped: toff passed, ton INT64_MAX) */
     /* the tracks */
     qd_tcur_t cur_t[QD_PAT_NTRACK];
     int64_t inf_g[QD_PAT_NTRACK];       /* the step (its grid tick) holding INF notes on the track */

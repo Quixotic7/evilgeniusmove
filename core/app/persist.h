@@ -95,11 +95,8 @@ enum { QD_RK_SET = 1, QD_RK_HDR, QD_RK_PAT, QD_RK_SND, QD_RK_LIB, QD_RK_FTAG, QD
 /* 2026-10-24: the projects' format, the settings record's version (persist.c prj_format_ok): 2 since six tracks (1:
  * eight); another one at the mount: the projects' store erased, a fresh start (MY PRESETS, in the library's store,
  * stay) */
-#if QD_TRACKS == 6 && QD_NSTEP == 128
-#define QD_PRJ_FORMAT 2
-#else                                  /* (another build's sizes: a format of its own, so its store never reads this one's) */
-#define QD_PRJ_FORMAT (0x40 | QD_TRACKS | (QD_NSTEP / 128) << 4)
-#endif
+#define QD_PRJ_FORMAT (0x40 | QD_TRACKS | (QD_NSTEP / 128) << 4)   /* (EvilGenius for Move: the sizes in it, so a
+                                                         * store of other sizes is never read as this one's) */
 
 /* the things the app writes, each with a hash of its record as last written and as last seen, and when it changed */
 enum { QD_PI_SET, QD_PI_HDR, QD_PI_PAT, QD_PI_SND = QD_PI_PAT + QD_NPAT, QD_PI_LIB = QD_PI_SND + QD_NSOUND,

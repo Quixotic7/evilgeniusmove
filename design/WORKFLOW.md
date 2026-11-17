@@ -470,8 +470,7 @@ compiles.
     queued.
 - **Left for later in Session:** the launch quantize as a setting (`LAUNCH Q`, now always 1 bar), `EMPTY SLOT`, the
   MIX page's pad columns (button 4 opens today's MIX), MIDI FX's own top row (button 2 opens the core's page), Copy
-  tapped alone (duplicate), New Clip and Double Loop on Shift + steps 14 / 15, undo for clip copy and cut, and saving
-  which clip each track plays (a project opens with every track on its current pattern).
+  tapped alone (duplicate), New Clip and Double Loop on Shift + steps 14 / 15, undo for clip copy and cut.
 
 **Not built yet:**
 
@@ -481,10 +480,21 @@ compiles.
 4. **The page belt on the wheel**, the sound-lock keys, the Trig page on pad 1.
 
 **17 November 2026: the core is this repository's own.** `core/` and `third_party/plutovg/` were copied here from the
-evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this repository.
-The FM-1's repository is back on its `main`, untouched. The FM-1 guards above (`QD_CLIPS`, `QD_NPAGE_UI`, the 6-track
-defaults) are still in the code; they are harmless here and can go. `make core-test` runs the core's `test_app` at the
-Move's sizes (110 checks).
+evilgenius repository (0.1.2 with the stage 2 and 3 changes); the Makefile and the Docker build use only this
+repository. The FM-1's repository is back on its `main`, untouched. The FM-1 switches went with the copy: clips are
+always on, 8 tracks and 256 steps are the core's own defaults, and the store's format number is the sizes'.
+(`QD_NPAGE_UI` stays: the core's own pages have 8 page keys.) `make core-test` runs the core's `test_app` at the Move's
+sizes (110 checks).
+
+**Checked on a Move (17 November 2026).** `tests/session.txt`, `modes.txt` and `eight.txt` played on the unit
+through the test hook (silent) give the same states as the simulator, and its screens match. Not checked: the LED
+colours and the sound, which need someone at the unit.
+
+**Each track's clip is saved with the project** (the project's header record, after the rooms): a project opens with
+its tracks on the clips they played, stopped ones stopped (`tests/keep.txt`, run twice on one store, in the simulator
+and on the unit). The header record had not been read back since the rooms were added to it (it was longer than its
+reader allowed), so a project's mix, key, launch mode and track names came back at their defaults; that is fixed here
+too.
 
 ## Open questions for the user
 

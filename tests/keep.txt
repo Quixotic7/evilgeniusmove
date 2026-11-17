@@ -1,0 +1,31 @@
+# What a project keeps between runs: run it twice with EGM_FLASH set to the same new file; the second run's start
+# shows the first run's end (each track's clip, stopped or not; track 3's volume)
+tap 85                   # out of the title
+wait 300
+state start
+tap 85                   # PLAY
+wait 300
+cc 50 127                # Session: track 1 on clip 2, track 2 stopped
+cc 50 0
+note 84 100
+wait 30
+note 84 0
+note 93 100
+wait 30
+note 93 0
+wait 100
+note 93 100
+wait 30
+note 93 0
+wait 2500
+cc 50 127                # Sequence; track 3 held: its volume down
+cc 50 0
+wait 100
+note 94 100
+cc 79 120
+cc 79 120
+cc 79 120
+cc 79 120
+note 94 0
+wait 4000                # (the store written a few seconds after a change)
+state end

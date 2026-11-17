@@ -34,12 +34,6 @@ uint32_t qd_seq_fn_roll(uint64_t seed, int track, int64_t n, int salt, uint32_t 
 }
 
 /* a pattern's seed: the run's, mixed with where the pattern started (a chain repeated rolls anew) */
-#if QD_CLIPS
-#define CLIPS(s) ((s)->clips)
-#else
-#define CLIPS(s) 0                                      /* (the device: no clips, their code never runs) */
-#endif
-
 static uint64_t seg_seed(const qd_seq_t *s, int64_t origin) { return splitmix(s->seed_play ^ (uint64_t)origin); }
 
 static int64_t L_of(const qd_pattern_t *P, int t) { return qd_rate_ticks(qd_tset_rate(&P->trk[t])); }
@@ -300,7 +294,7 @@ static void rewind(qd_seq_t *s, int t, int64_t x, int pat);
 static void cur_fix(qd_seq_t *s, qd_tcur_t *c)
 {
     const int t = (int)(c - s->cur_t);
-    if (CLIPS(s)) {                                     /* clips: the track's own queued clip at its own tick */
+    if (s->clips) {                                     /* clips: the track's own queued clip at its own tick */
         if (s->tq[t] >= 0 && c->origin < s->tq_x[t] && c->g >= s->tq_x[t] && pat_ready(s, s->tq[t])) {
             if (c->g > s->tq_x[t])
                 rewind(s, t, s->tq_x[t], s->tq[t]);
@@ -744,7 +738,7 @@ static void start_at(qd_seq_t *s, int pat)
     for (t = 0; t < QD_PAT_NTRACK; t++) {
         qd_tcur_t *c = &s->cur_t[t];
         memset(c, 0, sizeof *c);
-        if (CLIPS(s)) {                                 /* clips: each track its own (stopped: silent from the start) */
+        if (s->clips) {                                 /* clips: each track its own (stopped: silent from the start) */
             cur_enter(s, c, s->tpat[t], 0);
             s->torigin[t] = 0;
             s->tq[t] = -1;
@@ -757,9 +751,9 @@ static void start_at(qd_seq_t *s, int pat)
         s->heard_g[t] = -1;
         s->skip_n[t] = 0;
     }
-    if (!s->ext && !CLIPS(s))                           /* (clips: the tempo is the project's, left alone) */
+    if (!s->ext && !s->clips)                           /* (clips: the tempo is the project's, left alone) */
         qd_seq_tempo_mbpm(s, (int32_t)qd_proj_pat(s->proj, pat)->bpm * 1000);
-    if (s->nchain > 1 && !CLIPS(s)) {
+    if (s->nchain > 1 && !s->clips) {
         const int64_t m = qd_pat_master_ticks(qd_proj_pat(s->proj, pat));
         if (m > 0)
             schedule(s, m, s->chain[1], 1);
@@ -824,7 +818,7 @@ void qd_seq_stop(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
     s->ext_wait = 0;
     pos_set(s, 0);
     s->sw_pat = -1;
-    if (CLIPS(s)) {                                     /* clips: what was queued taken; a stopped track stays so */
+    if (s->clips) {                                     /* clips: what was queued taken; a stopped track stays so */
         int t;
         for (t = 0; t < QD_PAT_NTRACK; t++) {
             if (s->tq[t] >= 0) {
@@ -867,7 +861,7 @@ void qd_seq_select_at(qd_seq_t *s, int pat, int launch)
     if (pat < 0 || pat >= QD_NPAT)
         return;
     s->nchain = 0;
-    if (CLIPS(s)) {                                     /* clips: every track's part of it (a scene) */
+    if (s->clips) {                                     /* clips: every track's part of it (a scene) */
         int t;
         for (t = 0; t < QD_PAT_NTRACK; t++)
             qd_seq_launch(s, t, pat, launch);
@@ -934,9 +928,7 @@ int qd_seq_queued(const qd_seq_t *s) { return s->playing ? s->sw_pat : -1; }
 void qd_seq_clips(qd_seq_t *s, int on)
 {
     int t;
-    s->clips = QD_CLIPS && on;
-    if (!QD_CLIPS)
-        return;
+    s->clips = !!on;
     for (t = 0; t < QD_PAT_NTRACK; t++) {
         s->tpat[t] = (int8_t)s->cur;
         s->torigin[t] = s->origin;
@@ -980,7 +972,7 @@ static void clip_back(qd_seq_t *s, int t)
 void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
 {
     int64_t x;
-    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK || pat < 0 || pat >= QD_NPAT)
+    if (!s->clips || t < 0 || t >= QD_PAT_NTRACK || pat < 0 || pat >= QD_NPAT)
         return;
     if (!s->playing) {
         s->tpat[t] = (int8_t)pat;
@@ -1004,7 +996,7 @@ void qd_seq_launch(qd_seq_t *s, int t, int pat, int launch)
 void qd_seq_stop_track(qd_seq_t *s, int t, int launch)
 {
     int64_t x;
-    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK)
+    if (!s->clips || t < 0 || t >= QD_PAT_NTRACK)
         return;
     if (!s->playing) {
         s->tq[t] = -1;
@@ -1028,11 +1020,11 @@ void qd_seq_stop_track(qd_seq_t *s, int t, int launch)
     s->ton[t] = INT64_MAX;
 }
 
-int qd_seq_clip(const qd_seq_t *s, int t) { return CLIPS(s) && t >= 0 && t < QD_PAT_NTRACK ? s->tpat[t] : s->cur; }
+int qd_seq_clip(const qd_seq_t *s, int t) { return s->clips && t >= 0 && t < QD_PAT_NTRACK ? s->tpat[t] : s->cur; }
 
 int qd_seq_clip_on(const qd_seq_t *s, int t)
 {
-    if (!CLIPS(s))
+    if (!s->clips)
         return 1;
     if (t < 0 || t >= QD_PAT_NTRACK)
         return 0;
@@ -1043,7 +1035,7 @@ int qd_seq_clip_on(const qd_seq_t *s, int t)
 
 int qd_seq_clip_queued(const qd_seq_t *s, int t)
 {
-    if (!CLIPS(s) || t < 0 || t >= QD_PAT_NTRACK || !s->playing)
+    if (!s->clips || t < 0 || t >= QD_PAT_NTRACK || !s->playing)
         return -1;
     if (s->tq[t] >= 0)
         return s->tq[t];
@@ -1147,7 +1139,7 @@ static void dispatch(qd_seq_t *s, qd_sev_t *e, int64_t pos0, int64_t adv, qd_seq
             s->heard_sample[t] = o.sample;
         }
         if (!qd_seq_audible(s, P, t)                    /* a muted (or not soloed) track plays nothing: it runs on */
-            || (CLIPS(s) && s->toff[t] <= EV_G(e) && EV_G(e) < s->ton[t])) {   /* (clips: so does a stopped one) */
+            || (s->clips && s->toff[t] <= EV_G(e) && EV_G(e) < s->ton[t])) {   /* (clips: so does a stopped one) */
             if (e->kind == QD_EV_TIE && !s->tie_pending[t])
                 unskip(s, t, e->tick);
             break;
@@ -1224,7 +1216,7 @@ void qd_seq_block(qd_seq_t *s, qd_seq_out_fn out, void *ctx)
         else
             sw_hold(s);
     }
-    if (CLIPS(s))                                       /* clips: a queued clip playing from its tick */
+    if (s->clips)                                       /* clips: a queued clip playing from its tick */
         for (t = 0; t < QD_PAT_NTRACK; t++)
             if (s->tq[t] >= 0 && s->tq_x[t] <= t1m) {
                 s->tpat[t] = s->tq[t];
@@ -1362,7 +1354,7 @@ const qd_pattern_t *qd_seq_track_pat(const qd_seq_t *s, int t)
 {
     if (t < 0 || t >= QD_PAT_NTRACK)
         t = 0;
-    if (CLIPS(s))                                       /* clips: the track's own (its next one entered ahead: the one
+    if (s->clips)                                       /* clips: the track's own (its next one entered ahead: the one
                                                          * still playing) */
         return qd_proj_pat(s->proj, !s->playing || s->cur_t[t].origin > s->tick ? s->tpat[t] : s->cur_t[t].pat);
     if (!s->playing)
@@ -1386,9 +1378,9 @@ void qd_seq_track_pos_q(const qd_seq_t *s, int t, int64_t *num, int64_t *den)
     L = L_of(P, t);
     if (c->origin > T) {                                /* (the cursor is in the next pattern already: the old one's
                                                          * head, from that pattern's start, its loop's length wrapped) */
-        const qd_pattern_t *Q = qd_proj_pat(s->proj, CLIPS(s) ? s->tpat[t] : s->cur);
+        const qd_pattern_t *Q = qd_proj_pat(s->proj, s->clips ? s->tpat[t] : s->cur);
         const int64_t LQ = L_of(Q, t), lq = len_of(Q, t);
-        x = qd_mod64(T - (CLIPS(s) ? s->torigin[t] : s->origin), (int32_t)(lq * LQ));   /* (lq LQ: at most 128 x 2,419,200) */
+        x = qd_mod64(T - (s->clips ? s->torigin[t] : s->origin), (int32_t)(lq * LQ));   /* (lq LQ: at most 128 x 2,419,200) */
         *num = x < 0 ? 0 : x;
         *den = LQ;
         return;

@@ -75,16 +75,8 @@
 /* the tracks a project has (2026-10-24: 8 -> 6, the owner's choice, for RAM; model.h QD_NTRACK, pattern.h QD_PAT_NTRACK,
  * pool.h QD_POOL_NTRACK and the screens' UI_NTRACK are this). The white keys W1..W6 are the tracks; W7 / W8 are dark
  * where they chose a track. The store's format changed with it (persist.h QD_STORE_VER): an older store starts fresh. */
-#ifndef QD_TRACKS                      /* (a build may ask for more: EvilGenius for Move builds with 8) */
-#define QD_TRACKS 6
-#endif
-#ifndef QD_CLIPS                       /* 2026-11-17: clips, each track's part launched on its own (seq.h; EvilGenius
-                                        * for Move's). The device leaves them out (their RAM) */
-#ifdef QD_DEVICE
-#define QD_CLIPS 0
-#else
-#define QD_CLIPS 1
-#endif
+#ifndef QD_TRACKS                      /* (EvilGenius for Move: 8, the FM-1's 6 before the copy) */
+#define QD_TRACKS 8
 #endif
 
 /* P2.1b: the constant data that leaves the app slot for the data region (the fonts, the TAP ape's lines): the device's

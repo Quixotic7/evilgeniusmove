@@ -543,9 +543,15 @@ static uint32_t ser_hdr(const qd_app_t *a, uint8_t *b)
         memcpy(b + o, a->model.t[t].mix.room, QD_NROOM);
         o += QD_NROOM;
     }
+    for (t = 0; t < QD_NTRACK; t++) {                   /* the Move (2026-11-17): each track's clip, and whether it is
+                                                         * stopped (older records: every track on the current pattern) */
+        b[o++] = (uint8_t)qd_seq_clip(&a->seq, t);
+        b[o++] = (uint8_t)(qd_seq_clip_on(&a->seq, t) ? 0 : 1);
+    }
     return o;
 }
 
+static int g_clips_read;                                /* the Move: the project's record gave each track's clip */
 static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
 {
     qd_persist_t *ps = &a->per;
@@ -553,7 +559,9 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
     uint32_t o = 2;
     int t;
     if (len < 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK ||
-        len > 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK || b[0] != 'H' ||
+        len > 2 + QD_PROJ_NAME + 7 + 7 * QD_NTRACK + 3 + QD_NTRACK * (QD_TRACK_NAME + 1) + QD_NTRACK + QD_NTRACK * QD_NROOM +
+                  2 * QD_NTRACK || b[0] != 'H' ||   /* (the Move, 2026-11-17: the rooms and the clips counted; the rooms
+                                                     * made every record too long, so none was read back) */
         b[1] != 1)
         return 0;
     memcpy(ps->pname[p], b + o, QD_PROJ_NAME), o += QD_PROJ_NAME;
@@ -592,6 +600,16 @@ static int de_hdr(qd_app_t *a, int p, const uint8_t *b, uint32_t len, int apply)
         int k;
         for (k = 0; k < QD_NROOM; k++)
             a->model.t[t].mix.room[k] = o + (uint32_t)(t * QD_NROOM + k) < len ? (uint8_t)(b[o + t * QD_NROOM + k] & 127) : 0;
+    }
+    o += QD_NTRACK * QD_NROOM;
+    if (o + 2u * QD_NTRACK <= len) {                    /* the Move: each track's clip, stopped or not */
+        qd_seq_clips(&a->seq, 1);                       /* (playing: each at the next 16th) */
+        g_clips_read = 1;
+        for (t = 0; t < QD_NTRACK; t++) {
+            qd_seq_launch(&a->seq, t, b[o + 2 * t] % QD_NPAT, QD_LAUNCH_NOW);
+            if (b[o + 2 * t + 1] & 1)
+                qd_seq_stop_track(&a->seq, t, QD_LAUNCH_NOW);
+        }
     }
     return 1;
 }
@@ -1079,8 +1097,12 @@ FZ_COLD void qd_persist_attach(qd_app_t *a, const qd_flash_t *fl)   /* (once, at
             write_header(a);
         }
     }
+    g_clips_read = 0;
     proj_read(a, proj);
-    qd_seq_select(&a->seq, pat, 1);
+    if (g_clips_read)                                   /* (the Move: the clips as they were; pat the one edited) */
+        a->seq.cur = pat;
+    else
+        qd_seq_select(&a->seq, pat, 1);
     qd_app_tempo(a, qd_seq_bpm(&a->seq));
     qd_ctl_select_track(a, sel);
     mark_all_saved(a);
@@ -1442,8 +1464,12 @@ FZ_COLD int qd_proj_load(qd_app_t *a, int p)
     if (!ps->pexists[p])
         return qd_proj_new(a, p);
     proj_switch_prep(a);
+    g_clips_read = 0;
     proj_read(a, p);
-    qd_seq_select(&a->seq, 0, 1);              /* (a project opens on A01) */
+    if (g_clips_read)                                   /* (the Move: the clips as they were) */
+        a->seq.cur = qd_seq_clip(&a->seq, 0);
+    else
+        qd_seq_select(&a->seq, 0, 1);          /* (a project opens on A01) */
     qd_ctl_select_track(a, 0);
     qd_app_tempo(a, qd_seq_bpm(&a->seq));
     mark_all_saved(a);

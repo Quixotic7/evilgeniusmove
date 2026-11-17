@@ -71,14 +71,16 @@ build/move/evilgenius-heal: src/heal.c | $(B)
 
 $(B):
 	mkdir -p $@
-$(B)/core-%.o: %.c | $(B)
+# (the core's .c files include others and its headers: any of them changed rebuilds the core)
+CORE_DEPS := $(wildcard $(CORE)/*.h $(CORE)/*/*.[ch] $(CORE)/*/*/*.[ch]) Makefile
+$(B)/core-%.o: %.c $(CORE_DEPS) | $(B)
 	$(CC) $(OPT) -std=c99 -Wall -Wextra $(INC) $(DEFS) -c $< -o $@
 $(B)/sam-%.o: %.c | $(B)
 	$(CC) $(OPT) -std=gnu99 -w $(INC) $(DEFS) -c $< -o $@
 $(B)/pvg-%.o: %.c | $(B)
 	$(CC) $(OPT) -std=gnu11 -w $(INC) $(DEFS) -c $< -o $@
 # (the same DEFS as the core: its structs' layouts depend on them)
-$(B)/%.o: src/%.c $(wildcard src/*.h) Makefile | $(B)
+$(B)/%.o: src/%.c $(wildcard src/*.h) $(CORE_DEPS) | $(B)
 	$(CC) $(OPT) -std=gnu11 -Wall -Wextra $(INC) $(DEFS) -c $< -o $@
 
 # the core's own checks at the Move's sizes (core/tests/test_app.c: the app, the sequencer, clips), with the sanitizers

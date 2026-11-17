@@ -233,6 +233,7 @@ static struct {
     int cl_take;                       /* Copy / Delete + a clip: the one taken (track * NSLOT + slot; -1 none) .. */
     int cl_cut;                        /* .. by Delete: cut (kept aside, pasted where tapped next) */
     uint32_t left_ms;                  /* Left's last tap in CLIPS (two: back to the first slots) */
+    int proj_seen;                     /* the project the clips were last looked at in */
     int rnd_pad;                       /* RND PAGE (6) / RND SOUND (7) held (-1 none) .. */
     uint32_t rnd_ms;                   /* .. since then */
     int rnd_done;
@@ -823,9 +824,12 @@ static void tsound_sync(int k, int t, const qd_pattern_t *E)   /* pattern k's so
 static void clip_follow(void)
 {
     int t, k;
-    if (!A.seq.clips) {                                 /* (at start, and after anything that set the sequencer up again) */
-        qd_seq_clips(&A.seq, 1);
+    if (!A.seq.clips || A.per.proj != S.proj_seen) {   /* (at start, after anything that set the sequencer up again,
+                                                         * and in another project: no empty slot chosen) */
+        if (!A.seq.clips)
+            qd_seq_clips(&A.seq, 1);
         memset(S.tsel, -1, sizeof S.tsel);
+        S.proj_seen = A.per.proj;
     }
     for (t = 0; t < QD_TRACKS; t++)
         if (S.tsel[t] >= 0 && clip_has(S.tsel[t], t))
@@ -2095,8 +2099,8 @@ void egm_describe(char *out, int cap)
              "mute=%x solo=%x page=%d shift=%d sq=%s top=%s", S.mode, S.over, A.sel + 1, qd_view_screen(&A), A.seq.playing,
              qd_seq_bpm(&A.seq), A.seq.cur, A.ui.nheld, A.ui.rec, S.spage, S.fpage, A.seq.mute, A.seq.solo,
              A.ui.page[A.sel] + 1, S.shift, SQ_NAME[S.seq_mode], top_row_on() ? "on" : "hidden");
-    snprintf(out + strlen(out), (size_t)cap - strlen(out), " pagemode=%d loopmask=%x npage=%d", page_mode(), trk_loop(),
-             trk_npage());
+    snprintf(out + strlen(out), (size_t)cap - strlen(out), " pagemode=%d loopmask=%x npage=%d level=%d", page_mode(),
+             trk_loop(), trk_npage(), A.model.t[A.sel].mix.level);
     {   /* Session: the mode, the rows, each track's clip (x: stopped; >n queued, >x stopping) */
         int t;
         snprintf(out + strlen(out), (size_t)cap - strlen(out), " session=%d sn=%s srow=%d edit=%d clips=", S.session,

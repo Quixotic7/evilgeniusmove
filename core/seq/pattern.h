@@ -44,8 +44,8 @@ extern "C" {
 #endif
 
 #define QD_PAT_NTRACK QD_TRACKS
-#ifndef QD_NSTEP                        /* (a build may ask for more: EvilGenius for Move builds with 256, 16 pages) */
-#define QD_NSTEP 128                    /* steps a track at most (8 pages of 16) */
+#ifndef QD_NSTEP                        /* (EvilGenius for Move: 256, 16 pages; the FM-1's 128 before the copy) */
+#define QD_NSTEP 256                    /* steps a track at most (16 pages of 16) */
 #endif
 #define QD_PAGE 16
 #define QD_NPAGE (QD_NSTEP / QD_PAGE)

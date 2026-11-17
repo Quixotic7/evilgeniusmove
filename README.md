@@ -17,10 +17,12 @@ the test hook (below); the LED colours and the sound itself have only been judge
 The clip workflow (`design/WORKFLOW.md`) is being built in stages. Stage 1 (Sequence's four modes on the track
 buttons, their top rows, Mute held, the hold shortcuts) is in; `tests/modes.txt` exercises it. Stage 2 (8 tracks, 16
 pages of 16 steps, page mode on Loop) is in; `tests/eight.txt` exercises it. Stage 3 (clips and Session's CLIPS: each
-track's clips launched and stopped on their own, scenes) is in; `tests/session.txt` exercises it.
+track's clips launched and stopped on their own, scenes) is in; `tests/session.txt` exercises it, and
+`tests/keep.txt` (run twice with `EGM_FLASH` set to one store file) checks that a project keeps each track's clip and
+its mix.
 
 A clip is a pattern's part of one track: slot k of a track is pattern A(k+1)'s part, so a pattern is a scene. The core
-plays each track's clip on its own (`core/seq/seq.c`, `QD_CLIPS`). The
+plays each track's clip on its own (`core/seq/seq.c`). The
 sound stays with the track, as on Move: launching a clip, or editing one, carries the track's sound into it (the demo
 patterns' own sounds give way to the track's once they are played or edited).
 

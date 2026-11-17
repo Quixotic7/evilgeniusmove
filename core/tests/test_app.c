@@ -1046,7 +1046,6 @@ static void t_patterns(void)
 /* clips (2026-11-17, EvilGenius for Move): each track its own pattern's part, launched and stopped on its own */
 static void t_clips(void)
 {
-#if QD_CLIPS
     int64_t f0;
     uint32_t t0;
     int k;
@@ -1095,7 +1094,6 @@ static void t_clips(void)
           "a scene: every track's part of it");
     qd_seq_clips(&A.seq, 0);
     printf("  clips: each track its own clip, launched at the bar, stopped (silent), a scene\n");
-#endif
 }
 
 /* P1.4b: the tracks screen of clocks is retired; FX tapped: the effects (FX lit), again their next page; ENV: the mix
